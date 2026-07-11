@@ -56,10 +56,31 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(app.view.title(), Style::default().fg(Color::Magenta).bold()),
         Span::raw(if app.loading { "  ⟳" } else { "" }),
     ]);
-    let hint = Line::from(vec![Span::styled(
-        "1 Containers  2 Images  3 Services  4 Nodes  5 Contexts   ? help",
-        Style::default().fg(Color::DarkGray),
-    )]);
+    // Tab bar with the active view highlighted.
+    let mut hint_spans: Vec<Span> = Vec::new();
+    for (i, v) in crate::app::TABS.iter().enumerate() {
+        let active = app.view == *v
+            || (app.view == View::ServiceTasks && *v == View::Services);
+        let label = format!(" {} {} ", i + 1, v.title());
+        let style = if active {
+            Style::default().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
+        hint_spans.push(Span::styled(label, style));
+        hint_spans.push(Span::raw(" "));
+    }
+    hint_spans.push(Span::styled("h/l tabs  ? help", Style::default().fg(Color::DarkGray)));
+    if let Some(col) = app.sort_col {
+        let name = app.view.columns().get(col).copied().unwrap_or("");
+        let name = if name.is_empty() { "col0" } else { name };
+        let dir = if app.sort_desc { "▼" } else { "▲" };
+        hint_spans.push(Span::styled(
+            format!("   sort: {name} {dir}"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    let hint = Line::from(hint_spans);
     let p = Paragraph::new(vec![line, hint])
         .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray)));
     f.render_widget(p, area);
@@ -69,10 +90,20 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     let cols = app.view.columns();
     let vis = app.visible_indices();
 
-    let header = Row::new(
-        cols.iter()
-            .map(|c| Cell::from(*c).style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))),
-    )
+    let arrow = if app.sort_desc { " ▼" } else { " ▲" };
+    let header = Row::new(cols.iter().enumerate().map(|(i, c)| {
+        let text = if app.sort_col == Some(i) {
+            format!("{c}{arrow}")
+        } else {
+            (*c).to_string()
+        };
+        let style = if app.sort_col == Some(i) {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        };
+        Cell::from(text).style(style)
+    }))
     .height(1);
 
     let rows = vis.iter().enumerate().map(|(row_i, &item_i)| {
@@ -326,12 +357,13 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("Navigation", ""),
         help_line("  j / k, ↓ / ↑", "move selection"),
         help_line("  g / G", "top / bottom"),
-        help_line("  1..5", "Containers / Images / Services / Nodes / Contexts"),
+        help_line("  h / l", "previous / next tab"),
+        help_line("  1..5", "jump to Containers/Images/Services/Nodes/Contexts"),
         help_line("  : cmd", "co, im, svc, nodes, ctx, q  (jump to view)"),
         help_line("  /", "filter rows   (Esc clears)"),
-        help_line("  Enter", "Services→tasks · Contexts→switch"),
+        help_line("  o / O", "cycle sort column / reverse direction"),
+        help_line("  Enter", "Containers→logs · Services→tasks · Contexts→switch"),
         help_line("Actions", ""),
-        help_line("  l", "stream logs (-f)"),
         help_line("  a", "live stats (CPU/MEM/NET/BLK)"),
         help_line("  i", "inspect (describe)"),
         help_line("  e", "exec shell into container"),

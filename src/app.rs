@@ -3,12 +3,22 @@
 use crate::contexts;
 use crate::docker::{self, Item, StatsSample, View};
 use bollard::Docker;
+use std::cmp::Ordering;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::AbortHandle;
 
 const LOG_CAP: usize = 5000;
+
+/// The tab order for h/l navigation and the header tab bar.
+pub const TABS: [View; 5] = [
+    View::Containers,
+    View::Images,
+    View::Services,
+    View::Nodes,
+    View::Contexts,
+];
 
 /// Turn a raw bollard/transport error into an actionable one-liner.
 fn humanize_error(e: &str) -> String {
@@ -19,6 +29,35 @@ fn humanize_error(e: &str) -> String {
     } else {
         e.to_string()
     }
+}
+
+/// Parse a human size like "119.3MB" / "6379" into a byte count for sorting.
+fn parse_size(s: &str) -> Option<f64> {
+    let s = s.trim();
+    let end = s
+        .char_indices()
+        .find(|(_, c)| c.is_ascii_alphabetic())
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    let (num, unit) = s.split_at(end);
+    let num: f64 = num.trim().parse().ok()?;
+    let mult = match unit.trim().to_ascii_uppercase().as_str() {
+        "" | "B" => 1.0,
+        "KB" | "K" | "KIB" => 1024.0,
+        "MB" | "M" | "MIB" => 1024f64.powi(2),
+        "GB" | "G" | "GIB" => 1024f64.powi(3),
+        "TB" | "T" | "TIB" => 1024f64.powi(4),
+        _ => return None,
+    };
+    Some(num * mult)
+}
+
+/// Smart cell comparison: size-aware, then numeric, then case-insensitive text.
+fn cmp_cells(a: &str, b: &str) -> Ordering {
+    if let (Some(x), Some(y)) = (parse_size(a), parse_size(b)) {
+        return x.partial_cmp(&y).unwrap_or(Ordering::Equal);
+    }
+    a.to_lowercase().cmp(&b.to_lowercase())
 }
 
 /// Messages flowing from background tasks back into the UI loop.
@@ -75,6 +114,9 @@ pub struct App {
     pub drill_service: String,
     prev_view: View,
 
+    pub sort_col: Option<usize>,
+    pub sort_desc: bool,
+
     pub logs: Vec<String>,
     pub log_title: String,
     pub log_follow: bool,
@@ -119,6 +161,8 @@ impl App {
             confirm: None,
             drill_service: String::new(),
             prev_view: View::Containers,
+            sort_col: None,
+            sort_desc: false,
             logs: Vec::new(),
             log_title: String::new(),
             log_follow: true,
@@ -223,16 +267,26 @@ impl App {
     // ---- selection -----------------------------------------------------
 
     pub fn visible_indices(&self) -> Vec<usize> {
-        if self.filter.is_empty() {
-            return (0..self.items.len()).collect();
+        let mut idx: Vec<usize> = if self.filter.is_empty() {
+            (0..self.items.len()).collect()
+        } else {
+            let needle = self.filter.to_lowercase();
+            self.items
+                .iter()
+                .enumerate()
+                .filter(|(_, it)| it.cells.iter().any(|c| c.to_lowercase().contains(&needle)))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        if let Some(col) = self.sort_col {
+            idx.sort_by(|&i, &j| {
+                let a = self.items[i].cells.get(col).map(String::as_str).unwrap_or("");
+                let b = self.items[j].cells.get(col).map(String::as_str).unwrap_or("");
+                let ord = cmp_cells(a, b);
+                if self.sort_desc { ord.reverse() } else { ord }
+            });
         }
-        let needle = self.filter.to_lowercase();
-        self.items
-            .iter()
-            .enumerate()
-            .filter(|(_, it)| it.cells.iter().any(|c| c.to_lowercase().contains(&needle)))
-            .map(|(i, _)| i)
-            .collect()
+        idx
     }
 
     fn clamp_selection(&mut self) {
@@ -265,6 +319,8 @@ impl App {
         self.items.clear();
         self.filter.clear();
         self.filtering = false;
+        self.sort_col = None;
+        self.sort_desc = false;
         self.refresh();
     }
 
@@ -276,6 +332,8 @@ impl App {
             self.selected = 0;
             self.items.clear();
             self.filter.clear();
+            self.sort_col = None;
+            self.sort_desc = false;
             self.status = format!("tasks of {}", self.drill_service);
             self.refresh();
         }
@@ -461,6 +519,31 @@ impl App {
 
     // ---- key handling --------------------------------------------------
 
+    fn tab_index(&self) -> usize {
+        TABS.iter()
+            .position(|v| *v == self.view)
+            .unwrap_or(if self.view == View::ServiceTasks { 2 } else { 0 })
+    }
+
+    fn next_view(&mut self) {
+        let i = (self.tab_index() + 1) % TABS.len();
+        self.switch_view(TABS[i]);
+    }
+
+    fn prev_view(&mut self) {
+        let i = (self.tab_index() + TABS.len() - 1) % TABS.len();
+        self.switch_view(TABS[i]);
+    }
+
+    fn cycle_sort(&mut self) {
+        let ncols = self.view.columns().len();
+        self.sort_col = match self.sort_col {
+            None => Some(0),
+            Some(c) if c + 1 < ncols => Some(c + 1),
+            Some(_) => None, // wrap back to unsorted (original order)
+        };
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
         // global quit
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -526,9 +609,12 @@ impl App {
             KeyCode::Enter => match self.view {
                 View::Contexts => self.switch_context(),
                 View::Services => self.drill_into_service(),
+                View::Containers | View::ServiceTasks => self.start_logs(),
                 _ => {}
             },
-            KeyCode::Char('l') => self.start_logs(),
+            // h / l switch tabs (vim-style); logs moved to Enter
+            KeyCode::Char('l') | KeyCode::Right => self.next_view(),
+            KeyCode::Char('h') | KeyCode::Left => self.prev_view(),
             KeyCode::Char('i') => self.start_inspect(),
             KeyCode::Char('e') => {
                 if self.view == View::Containers {
@@ -546,6 +632,8 @@ impl App {
             KeyCode::Char('p') => self.action("pause"),
             KeyCode::Char('P') => self.action("unpause"),
             KeyCode::Char('x') => self.action("rm"),
+            KeyCode::Char('o') => self.cycle_sort(),
+            KeyCode::Char('O') => self.sort_desc = !self.sort_desc,
             KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Esc => {
                 if self.view == View::ServiceTasks {
@@ -707,5 +795,43 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cmp_cells, parse_size};
+    use std::cmp::Ordering;
+
+    #[test]
+    fn parse_size_units() {
+        assert_eq!(parse_size("6379"), Some(6379.0));
+        assert_eq!(parse_size("1KB"), Some(1024.0));
+        assert_eq!(parse_size("119.3MB"), Some(119.3 * 1024.0 * 1024.0));
+        assert!(parse_size("1.5GB").unwrap() > parse_size("900MB").unwrap());
+        assert_eq!(parse_size("latest"), None);
+    }
+
+    #[test]
+    fn cmp_size_aware() {
+        // GB sorts above MB numerically, not lexically
+        assert_eq!(cmp_cells("1.5GB", "900MB"), Ordering::Greater);
+        assert_eq!(cmp_cells("119.3MB", "1.5GB"), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_text_case_insensitive() {
+        assert_eq!(cmp_cells("Redis", "alpine"), Ordering::Greater); // 'r' > 'a'
+        assert_eq!(cmp_cells("exited", "running"), Ordering::Less);
+    }
+
+    #[test]
+    fn sort_orders_indices() {
+        // emulate visible_indices sort over a column of size strings
+        let col = ["119.3MB", "1.5GB", "12.4MB", "900MB"];
+        let mut idx: Vec<usize> = (0..col.len()).collect();
+        idx.sort_by(|&i, &j| cmp_cells(col[i], col[j]));
+        let sorted: Vec<&str> = idx.iter().map(|&i| col[i]).collect();
+        assert_eq!(sorted, ["12.4MB", "119.3MB", "900MB", "1.5GB"]);
     }
 }

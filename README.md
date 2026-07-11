@@ -39,20 +39,21 @@ Requires a working Rust toolchain and access to at least one Docker endpoint.
 
 | Key            | Action                                             |
 |----------------|----------------------------------------------------|
-| `1`–`5`        | Containers / Images / Services / Nodes / Contexts  |
+| `h` / `l`      | previous / next tab                                |
+| `1`–`5`        | jump to Containers / Images / Services / Nodes / Contexts |
 | `:`            | command mode (`co`, `im`, `svc`, `nodes`, `ctx`)   |
 | `j`/`k`, `↓`/`↑` | move selection                                   |
 | `g` / `G`      | jump to top / bottom                               |
 | `/`            | filter rows (`Esc` clears)                         |
 | `Enter`        | Services → tasks · Contexts → switch context       |
-| `l`            | stream logs                                        |
 | `a`            | live stats panel (CPU / MEM / NET / BLK / PIDs)    |
 | `i`            | inspect (describe)                                 |
 | `e`            | exec shell into container                          |
 | `s` / `r` / `S`| stop / restart / start                             |
 | `p` / `P`      | pause / unpause                                    |
 | `x`            | remove container (with confirmation)               |
-| `f`            | toggle log follow                                  |
+| `f` / `w`      | toggle log follow / wrap                           |
+| `/` `s` (logs) | search-filter logs / save logs to file             |
 | `?`            | help                                               |
 | `q` / `Ctrl-c` | quit                                               |
 
