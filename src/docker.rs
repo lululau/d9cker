@@ -1,0 +1,427 @@
+//! Docker data layer, backed by the native bollard API.
+//!
+//! bollard talks to a single endpoint; context enumeration/resolution lives in
+//! `contexts`. Given a resolved host string we `connect()` here and drive all
+//! reads/actions/log-streams over the native API. The one exception is
+//! interactive `exec`, handled in `main` via the `docker` CLI.
+
+use crate::contexts;
+use anyhow::{anyhow, Result};
+use bollard::query_parameters::{
+    InspectContainerOptions, ListContainersOptionsBuilder, ListImagesOptionsBuilder,
+    ListNodesOptions, ListServicesOptions, ListTasksOptionsBuilder, LogsOptionsBuilder,
+    InspectServiceOptions, RemoveContainerOptionsBuilder, RestartContainerOptions,
+    StartContainerOptions, StopContainerOptions,
+};
+use bollard::{Docker, API_DEFAULT_VERSION};
+use futures::stream::{BoxStream, StreamExt};
+use serde::Serialize;
+use serde_json::Value;
+use std::collections::HashMap;
+
+const TIMEOUT: u64 = 120;
+
+/// The resource views d9cker can browse, k9s-style.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    Containers,
+    Images,
+    Services,
+    Nodes,
+    Contexts,
+    ServiceTasks,
+}
+
+impl View {
+    pub fn title(self) -> &'static str {
+        match self {
+            View::Containers => "Containers",
+            View::Images => "Images",
+            View::Services => "Services",
+            View::Nodes => "Nodes",
+            View::Contexts => "Contexts",
+            View::ServiceTasks => "Service Tasks",
+        }
+    }
+
+    pub fn columns(self) -> &'static [&'static str] {
+        match self {
+            View::Containers => &["ID", "NAME", "IMAGE", "STATE", "STATUS", "PORTS"],
+            View::Images => &["REPOSITORY", "TAG", "ID", "SIZE", "CREATED"],
+            View::Services => &["NAME", "MODE", "REPLICAS", "IMAGE", "PORTS"],
+            View::Nodes => &["HOSTNAME", "STATUS", "AVAILABILITY", "MANAGER", "ENGINE"],
+            View::Contexts => &["", "NAME", "DESCRIPTION", "ENDPOINT"],
+            View::ServiceTasks => &["NAME", "NODE", "DESIRED", "CURRENT", "IMAGE", "ERROR"],
+        }
+    }
+
+    pub fn inspect_type(self) -> Option<&'static str> {
+        match self {
+            View::Containers => Some("container"),
+            View::Images => Some("image"),
+            View::Services => Some("service"),
+            View::Nodes => Some("node"),
+            _ => None,
+        }
+    }
+}
+
+/// One row in a resource table.
+#[derive(Clone, Debug)]
+pub struct Item {
+    pub id: String,
+    pub name: String,
+    pub cells: Vec<String>,
+}
+
+// ---- helpers -----------------------------------------------------------
+
+/// Render a serde-serializable value (typically a bollard enum) as a clean
+/// display string, without depending on each type's Display impl.
+fn estr<T: Serialize>(v: &T) -> String {
+    match serde_json::to_value(v) {
+        Ok(Value::String(s)) => s,
+        Ok(other) => other.to_string().trim_matches('"').to_string(),
+        Err(_) => String::new(),
+    }
+}
+
+fn opt_estr<T: Serialize>(v: &Option<T>) -> String {
+    v.as_ref().map(estr).unwrap_or_default()
+}
+
+fn short(id: &str) -> String {
+    let id = id.strip_prefix("sha256:").unwrap_or(id);
+    id.chars().take(12).collect()
+}
+
+/// Strip a trailing `@sha256:…` digest from an image ref for display.
+fn clean_image(img: &str) -> String {
+    img.split_once("@sha256:").map(|(h, _)| h).unwrap_or(img).to_string()
+}
+
+fn human_size(bytes: i64) -> String {
+    const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = bytes as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < U.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{bytes}B")
+    } else {
+        format!("{v:.1}{}", U[i])
+    }
+}
+
+fn fmt_age(unix_secs: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let d = (now - unix_secs).max(0);
+    match d {
+        0..=59 => format!("{d}s"),
+        60..=3599 => format!("{}m", d / 60),
+        3600..=86399 => format!("{}h", d / 3600),
+        _ => format!("{}d", d / 86400),
+    }
+}
+
+// ---- connection --------------------------------------------------------
+
+/// Connect bollard to a resolved endpoint host string.
+pub fn connect(host: &str) -> Result<Docker> {
+    let d = if host.starts_with("ssh://") {
+        Docker::connect_with_ssh(host, TIMEOUT, API_DEFAULT_VERSION, None)?
+    } else if host.starts_with("unix://") || host.starts_with("npipe://") {
+        Docker::connect_with_unix(host, TIMEOUT, API_DEFAULT_VERSION)?
+    } else if host.is_empty() {
+        Docker::connect_with_defaults()?
+    } else {
+        Docker::connect_with_http(host, TIMEOUT, API_DEFAULT_VERSION)?
+    };
+    Ok(d)
+}
+
+// ---- listing -----------------------------------------------------------
+
+/// List items for a view. `arg` = current-context name (Contexts) or service
+/// name (ServiceTasks).
+pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
+    let items = match view {
+        View::Containers => {
+            let opts = ListContainersOptionsBuilder::default().all(true).build();
+            docker
+                .list_containers(Some(opts))
+                .await?
+                .into_iter()
+                .map(|c| {
+                    let id = c.id.unwrap_or_default();
+                    let name = c
+                        .names
+                        .and_then(|n| n.into_iter().next())
+                        .unwrap_or_default()
+                        .trim_start_matches('/')
+                        .to_string();
+                    let ports = fmt_ports(&c.ports);
+                    let cells = vec![
+                        short(&id),
+                        name.clone(),
+                        clean_image(&c.image.unwrap_or_default()),
+                        opt_estr(&c.state),
+                        c.status.unwrap_or_default(),
+                        ports,
+                    ];
+                    Item { id, name, cells }
+                })
+                .collect()
+        }
+        View::Images => {
+            let opts = ListImagesOptionsBuilder::default().build();
+            docker
+                .list_images(Some(opts))
+                .await?
+                .into_iter()
+                .map(|im| {
+                    let id = im.id;
+                    let (repo, tag) = im
+                        .repo_tags
+                        .first()
+                        .and_then(|rt| rt.rsplit_once(':'))
+                        .map(|(r, t)| (r.to_string(), t.to_string()))
+                        .unwrap_or_else(|| ("<none>".into(), "<none>".into()));
+                    let cells = vec![
+                        repo.clone(),
+                        tag.clone(),
+                        short(&id),
+                        human_size(im.size),
+                        fmt_age(im.created),
+                    ];
+                    Item { id, name: format!("{repo}:{tag}"), cells }
+                })
+                .collect()
+        }
+        View::Services => {
+            let svcs = docker.list_services(None::<ListServicesOptions>).await?;
+            svcs.into_iter()
+                .map(|s| {
+                    let id = s.id.clone().unwrap_or_default();
+                    let spec = s.spec.as_ref();
+                    let name = spec.and_then(|sp| sp.name.clone()).unwrap_or_default();
+                    let mode = spec.and_then(|sp| sp.mode.as_ref());
+                    let (mode_str, replicas) = match mode {
+                        Some(m) if m.replicated.is_some() => (
+                            "replicated".to_string(),
+                            m.replicated
+                                .as_ref()
+                                .and_then(|r| r.replicas)
+                                .map(|n| n.to_string())
+                                .unwrap_or_default(),
+                        ),
+                        Some(m) if m.global.is_some() => ("global".to_string(), "-".to_string()),
+                        _ => (String::new(), String::new()),
+                    };
+                    let image = spec
+                        .and_then(|sp| sp.task_template.as_ref())
+                        .and_then(|tt| tt.container_spec.as_ref())
+                        .and_then(|cs| cs.image.clone())
+                        .map(|i| clean_image(&i))
+                        .unwrap_or_default();
+                    let ports = s
+                        .endpoint
+                        .as_ref()
+                        .and_then(|e| e.ports.as_ref())
+                        .map(|ps| {
+                            ps.iter()
+                                .filter_map(|p| {
+                                    p.published_port.map(|pub_p| {
+                                        format!("{}:{}", pub_p, p.target_port.unwrap_or(0))
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    let cells = vec![name.clone(), mode_str, replicas, image, ports];
+                    Item { id, name, cells }
+                })
+                .collect()
+        }
+        View::Nodes => {
+            let nodes = docker.list_nodes(None::<ListNodesOptions>).await?;
+            nodes
+                .into_iter()
+                .map(|n| {
+                    let id = n.id.clone().unwrap_or_default();
+                    let desc = n.description.as_ref();
+                    let host = desc
+                        .and_then(|d| d.hostname.clone())
+                        .unwrap_or_default();
+                    let status = n
+                        .status
+                        .as_ref()
+                        .map(|s| opt_estr(&s.state))
+                        .unwrap_or_default();
+                    let avail = n
+                        .spec
+                        .as_ref()
+                        .map(|s| opt_estr(&s.availability))
+                        .unwrap_or_default();
+                    let manager = match n.manager_status.as_ref() {
+                        Some(ms) if ms.leader == Some(true) => "Leader".to_string(),
+                        Some(_) => "Reachable".to_string(),
+                        None => String::new(),
+                    };
+                    let engine = desc
+                        .and_then(|d| d.engine.as_ref())
+                        .and_then(|e| e.engine_version.clone())
+                        .unwrap_or_default();
+                    let cells = vec![host.clone(), status, avail, manager, engine];
+                    Item { id, name: host, cells }
+                })
+                .collect()
+        }
+        View::ServiceTasks => {
+            let mut filters: HashMap<String, Vec<String>> = HashMap::new();
+            filters.insert("service".to_string(), vec![arg.to_string()]);
+            let opts = ListTasksOptionsBuilder::default().filters(&filters).build();
+            let tasks = docker.list_tasks(Some(opts)).await?;
+            tasks
+                .into_iter()
+                .map(|t| {
+                    let id = t.id.clone().unwrap_or_default();
+                    let slot = t.slot.map(|n| n.to_string()).unwrap_or_default();
+                    // bollard usually leaves Task.name empty; reconstruct service.slot
+                    let name = t
+                        .name
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| {
+                            if slot.is_empty() { short(&id) } else { format!("{arg}.{slot}") }
+                        });
+                    let node = short(&t.node_id.clone().unwrap_or_default());
+                    let desired = opt_estr(&t.desired_state);
+                    let (current, err) = t
+                        .status
+                        .as_ref()
+                        .map(|s| (opt_estr(&s.state), s.err.clone().unwrap_or_default()))
+                        .unwrap_or_default();
+                    let image = t
+                        .spec
+                        .as_ref()
+                        .and_then(|sp| sp.container_spec.as_ref())
+                        .and_then(|cs| cs.image.clone())
+                        .map(|i| clean_image(&i))
+                        .unwrap_or_default();
+                    let cells = vec![name.clone(), node, desired, current, image, err];
+                    Item { id, name, cells }
+                })
+                .collect()
+        }
+        View::Contexts => contexts::load_contexts()
+            .into_iter()
+            .map(|c| {
+                let current = c.name == arg;
+                let cells = vec![
+                    if current { "●".to_string() } else { " ".to_string() },
+                    c.name.clone(),
+                    c.description,
+                    c.host,
+                ];
+                Item { id: c.name.clone(), name: c.name, cells }
+            })
+            .collect(),
+    };
+    Ok(items)
+}
+
+fn fmt_ports(ports: &Option<Vec<bollard::models::PortSummary>>) -> String {
+    let Some(ports) = ports else { return String::new() };
+    let mut seen = Vec::new();
+    for p in ports {
+        let proto = opt_estr(&p.typ);
+        let s = match p.public_port {
+            Some(pub_p) => format!("{}->{}/{}", pub_p, p.private_port, proto),
+            None => format!("{}/{}", p.private_port, proto),
+        };
+        if !seen.contains(&s) {
+            seen.push(s);
+        }
+    }
+    seen.join(", ")
+}
+
+// ---- swarm meta --------------------------------------------------------
+
+pub async fn swarm_state(docker: &Docker) -> String {
+    match docker.info().await {
+        Ok(info) => info
+            .swarm
+            .and_then(|s| s.local_node_state)
+            .map(|st| estr(&st))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "inactive".into()),
+        Err(_) => "unreachable".into(),
+    }
+}
+
+// ---- inspect -----------------------------------------------------------
+
+pub async fn inspect(docker: &Docker, kind: &str, id: &str) -> Result<String> {
+    let json = match kind {
+        "container" => {
+            serde_json::to_string_pretty(&docker.inspect_container(id, None::<InspectContainerOptions>).await?)?
+        }
+        "image" => serde_json::to_string_pretty(&docker.inspect_image(id).await?)?,
+        "service" => serde_json::to_string_pretty(&docker.inspect_service(id, None::<InspectServiceOptions>).await?)?,
+        "node" => serde_json::to_string_pretty(&docker.inspect_node(id).await?)?,
+        other => return Err(anyhow!("cannot inspect '{other}'")),
+    };
+    Ok(json)
+}
+
+// ---- lifecycle actions -------------------------------------------------
+
+pub async fn container_action(docker: &Docker, verb: &str, id: &str) -> Result<()> {
+    match verb {
+        "start" => docker.start_container(id, None::<StartContainerOptions>).await?,
+        "stop" => docker.stop_container(id, None::<StopContainerOptions>).await?,
+        "restart" => docker.restart_container(id, None::<RestartContainerOptions>).await?,
+        "pause" => docker.pause_container(id).await?,
+        "unpause" => docker.unpause_container(id).await?,
+        "rm" => {
+            let opts = RemoveContainerOptionsBuilder::default().force(true).build();
+            docker.remove_container(id, Some(opts)).await?
+        }
+        other => return Err(anyhow!("unknown action '{other}'")),
+    }
+    Ok(())
+}
+
+// ---- log streaming -----------------------------------------------------
+
+fn fmt_log(item: Result<bollard::container::LogOutput, bollard::errors::Error>) -> String {
+    match item {
+        Ok(out) => out.to_string().trim_end_matches(['\n', '\r']).to_string(),
+        Err(e) => format!("⚠ {e}"),
+    }
+}
+
+/// A boxed stream of already-formatted log lines for a container or service.
+pub fn log_stream(docker: &Docker, view: View, id: &str, tail: u32) -> BoxStream<'static, String> {
+    let tail = tail.to_string();
+    let opts = LogsOptionsBuilder::default()
+        .follow(true)
+        .stdout(true)
+        .stderr(true)
+        .tail(tail.as_str())
+        .timestamps(true)
+        .build();
+    match view {
+        // service_logs also accepts LogsOptions in bollard 0.21
+        View::Services => docker.service_logs(id, Some(opts)).map(fmt_log).boxed(),
+        _ => docker.logs(id, Some(opts)).map(fmt_log).boxed(),
+    }
+}
