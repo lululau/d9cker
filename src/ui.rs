@@ -175,19 +175,31 @@ fn column_widths(view: View) -> Vec<Constraint> {
 
 fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     let inner_h = area.height.saturating_sub(2) as usize;
-    let total = app.logs.len();
+    let lines = app.filtered_logs();
+    let total = lines.len();
     // log_scroll is scrollback from the bottom; 0 == pinned to newest line.
     let max_scroll = total.saturating_sub(inner_h);
     let scrollback = app.log_scroll.min(max_scroll);
     let end = total - scrollback;
     let start = end.saturating_sub(inner_h);
-    let slice = &app.logs[start..end];
 
-    let text: Vec<Line> = slice.iter().map(|l| Line::from(l.clone())).collect();
+    let text: Vec<Line> = lines[start..end].iter().map(|l| Line::from((*l).clone())).collect();
     let follow = if app.log_follow { "FOLLOW" } else { "PAUSED" };
-    let title = format!(" logs: {}  [{}]  {}-{}/{} ", app.log_title, follow, start, end, total);
-    let p = Paragraph::new(text)
+    let wrap = if app.log_wrap { " wrap" } else { "" };
+    let filt = if app.log_filter.is_empty() {
+        String::new()
+    } else {
+        format!("  /{}", app.log_filter)
+    };
+    let title = format!(
+        " logs: {}  [{}{}]  {}-{}/{}{} ",
+        app.log_title, follow, wrap, start, end, total, filt
+    );
+    let mut p = Paragraph::new(text)
         .block(Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(ACCENT)));
+    if app.log_wrap {
+        p = p.wrap(Wrap { trim: false });
+    }
     f.render_widget(p, area);
 }
 
@@ -281,7 +293,13 @@ fn render_stats(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
-    let content = if app.commanding {
+    let content = if app.mode == Mode::Logs && app.log_searching {
+        Line::from(vec![
+            Span::styled("log /", Style::default().fg(Color::Yellow).bold()),
+            Span::raw(app.log_filter.clone()),
+            Span::styled("▏", Style::default().fg(Color::Yellow)),
+        ])
+    } else if app.commanding {
         Line::from(vec![
             Span::styled(":", Style::default().fg(ACCENT).bold()),
             Span::raw(app.command.clone()),
@@ -321,7 +339,8 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  p / P", "pause / unpause"),
         help_line("  x", "remove container (confirm)"),
         help_line("Logs / Inspect", ""),
-        help_line("  f", "toggle follow (logs)"),
+        help_line("  f / w", "toggle follow / wrap (logs)"),
+        help_line("  / , s", "search-filter / save logs to file"),
         help_line("  j/k g/G", "scroll   ·   Esc / q  back"),
         help_line("General", ""),
         help_line("  q / Ctrl-c", "quit"),

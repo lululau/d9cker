@@ -79,6 +79,9 @@ pub struct App {
     pub log_title: String,
     pub log_follow: bool,
     pub log_scroll: usize, // scrollback lines from the bottom; 0 == pinned
+    pub log_filter: String,
+    pub log_searching: bool,
+    pub log_wrap: bool,
     log_task: Option<AbortHandle>,
 
     pub inspect_lines: Vec<String>,
@@ -120,6 +123,9 @@ impl App {
             log_title: String::new(),
             log_follow: true,
             log_scroll: 0,
+            log_filter: String::new(),
+            log_searching: false,
+            log_wrap: false,
             log_task: None,
             inspect_lines: Vec::new(),
             inspect_title: String::new(),
@@ -306,6 +312,8 @@ impl App {
         self.logs.clear();
         self.log_scroll = 0;
         self.log_follow = true;
+        self.log_filter.clear();
+        self.log_searching = false;
         self.log_title = title;
         self.mode = Mode::Logs;
 
@@ -319,6 +327,33 @@ impl App {
             let _ = tx.send(Msg::LogEnded);
         });
         self.log_task = Some(handle.abort_handle());
+    }
+
+    /// Log lines matching the active in-log search filter.
+    pub fn filtered_logs(&self) -> Vec<&String> {
+        if self.log_filter.is_empty() {
+            self.logs.iter().collect()
+        } else {
+            let needle = self.log_filter.to_lowercase();
+            self.logs
+                .iter()
+                .filter(|l| l.to_lowercase().contains(&needle))
+                .collect()
+        }
+    }
+
+    fn save_logs(&mut self) {
+        let name: String = self
+            .log_title
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        let base = if name.is_empty() { "logs".to_string() } else { name };
+        let path = format!("d9cker-{base}.log");
+        match std::fs::write(&path, self.logs.join("\n")) {
+            Ok(()) => self.status = format!("saved {} lines -> {}", self.logs.len(), path),
+            Err(e) => self.status = format!("⚠ save: {e}"),
+        }
     }
 
     fn stop_logs(&mut self) {
@@ -577,11 +612,41 @@ impl App {
     }
 
     fn logs_key(&mut self, code: KeyCode) {
+        // in-log search input
+        if self.log_searching {
+            match code {
+                KeyCode::Char(c) => {
+                    self.log_filter.push(c);
+                    self.log_scroll = 0;
+                }
+                KeyCode::Backspace => {
+                    self.log_filter.pop();
+                }
+                KeyCode::Enter => self.log_searching = false,
+                KeyCode::Esc => {
+                    self.log_searching = false;
+                    self.log_filter.clear();
+                }
+                _ => {}
+            }
+            return;
+        }
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
-                self.stop_logs();
-                self.mode = Mode::Table;
+                if !self.log_filter.is_empty() {
+                    self.log_filter.clear();
+                } else {
+                    self.stop_logs();
+                    self.mode = Mode::Table;
+                }
             }
+            KeyCode::Char('/') => {
+                self.log_searching = true;
+                self.log_filter.clear();
+                self.log_follow = false;
+            }
+            KeyCode::Char('w') => self.log_wrap = !self.log_wrap,
+            KeyCode::Char('s') => self.save_logs(),
             KeyCode::Char('f') => {
                 self.log_follow = !self.log_follow;
                 if self.log_follow {
