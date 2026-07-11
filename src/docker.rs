@@ -64,6 +64,15 @@ impl View {
         }
     }
 
+    /// Whether this view should be polled by the periodic auto-refresh.
+    /// Fast-changing resources yes; slow/static ones refresh on entry + manual.
+    pub fn auto_refresh(self) -> bool {
+        matches!(
+            self,
+            View::Containers | View::Services | View::Nodes | View::ServiceTasks
+        )
+    }
+
     pub fn inspect_type(self) -> Option<&'static str> {
         match self {
             View::Containers => Some("container"),

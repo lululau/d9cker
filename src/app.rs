@@ -681,6 +681,17 @@ impl App {
             return;
         }
 
+        // manual refresh of the current view (esp. for non-auto-refresh views)
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('r') {
+            if self.mode == Mode::Table {
+                self.refresh();
+                if self.view == View::Volumes {
+                    self.fetch_volume_sizes();
+                }
+            }
+            return;
+        }
+
         // destructive confirmation intercepts everything
         if self.confirm.is_some() {
             match key.code {
