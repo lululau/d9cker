@@ -2,10 +2,10 @@
 
 use crate::app::{App, Mode};
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Wrap},
+    widgets::{Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Wrap},
     Frame,
 };
 
@@ -13,76 +13,94 @@ const ACCENT: Color = Color::Cyan;
 
 pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::vertical([
-        Constraint::Length(3), // header
-        Constraint::Min(1),    // body
-        Constraint::Length(1), // status/footer
+        Constraint::Length(1), // status line
+        Constraint::Length(1), // tab bar
+        Constraint::Min(1),    // content
+        Constraint::Length(1), // footer
     ])
     .split(f.area());
 
-    render_header(f, app, chunks[0]);
+    render_status(f, app, chunks[0]);
+    render_tabs(f, app, chunks[1]);
     match app.mode {
-        Mode::Table => render_table(f, app, chunks[1]),
-        Mode::Logs => render_logs(f, app, chunks[1]),
-        Mode::Inspect => render_inspect(f, app, chunks[1]),
-        Mode::Stats => render_stats(f, app, chunks[1]),
+        Mode::Table => render_table(f, app, chunks[2]),
+        Mode::Logs => render_logs(f, app, chunks[2]),
+        Mode::Inspect => render_inspect(f, app, chunks[2]),
+        Mode::Stats => render_stats(f, app, chunks[2]),
         Mode::Help => {
-            render_table(f, app, chunks[1]);
-            render_help(f, chunks[1]);
+            render_table(f, app, chunks[2]);
+            render_help(f, chunks[2]);
         }
     }
-    render_footer(f, app, chunks[2]);
+    render_footer(f, app, chunks[3]);
 
     if let Some(c) = &app.confirm {
         render_confirm(f, &c.prompt, f.area());
     }
 }
 
-fn render_header(f: &mut Frame, app: &App, area: Rect) {
+fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let swarm_color = match app.swarm.as_str() {
         "active" => Color::Green,
         "unreachable" | "" => Color::Red,
         _ => Color::Yellow,
     };
-    let line = Line::from(vec![
+    let cols = Layout::horizontal([Constraint::Min(1), Constraint::Length(8)]).split(area);
+
+    let mut left = vec![
         Span::styled(" d9cker ", Style::default().fg(Color::Black).bg(ACCENT).bold()),
-        Span::raw("  context: "),
-        Span::styled(&app.context, Style::default().fg(ACCENT).bold()),
-        Span::raw("   swarm: "),
+        Span::raw("  "),
+        Span::styled(app.context.clone(), Style::default().fg(ACCENT).bold()),
+        Span::raw("  "),
+        Span::styled("●", Style::default().fg(swarm_color).bold()),
         Span::styled(
-            if app.swarm.is_empty() { "…" } else { &app.swarm },
-            Style::default().fg(swarm_color).bold(),
+            format!(" swarm {}", if app.swarm.is_empty() { "…" } else { &app.swarm }),
+            Style::default().fg(swarm_color),
         ),
-        Span::raw("   view: "),
-        Span::styled(app.view.title(), Style::default().fg(Color::Magenta).bold()),
-    ]);
-    // Tab bar with the active view highlighted.
-    let mut hint_spans: Vec<Span> = Vec::new();
-    for (i, v) in crate::app::TABS.iter().enumerate() {
-        let active = app.view == *v
-            || (app.view == View::ServiceTasks && *v == View::Services);
-        let label = format!(" {} {} ", i + 1, v.title());
-        let style = if active {
-            Style::default().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        hint_spans.push(Span::styled(label, style));
-        hint_spans.push(Span::raw(" "));
+    ];
+    if app.view == View::ServiceTasks && !app.drill_service.is_empty() {
+        left.push(Span::styled(
+            format!("  › tasks: {}", app.drill_service),
+            Style::default().fg(Color::Magenta),
+        ));
     }
-    hint_spans.push(Span::styled("h/l tabs  ? help", Style::default().fg(Color::DarkGray)));
     if let Some(col) = app.sort_col {
         let name = app.view.columns().get(col).copied().unwrap_or("");
         let name = if name.is_empty() { "col0" } else { name };
         let dir = if app.sort_desc { "▼" } else { "▲" };
-        hint_spans.push(Span::styled(
-            format!("   sort: {name} {dir}"),
+        left.push(Span::styled(
+            format!("   sort {name} {dir}"),
             Style::default().fg(Color::Yellow),
         ));
     }
-    let hint = Line::from(hint_spans);
-    let p = Paragraph::new(vec![line, hint])
-        .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(Color::DarkGray)));
-    f.render_widget(p, area);
+    f.render_widget(Paragraph::new(Line::from(left)), cols[0]);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled("? help", Style::default().fg(Color::DarkGray))))
+            .alignment(Alignment::Right),
+        cols[1],
+    );
+}
+
+fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    for v in crate::app::TABS {
+        let active = app.view == v || (app.view == View::ServiceTasks && v == View::Services);
+        if active {
+            let label = if app.view == v {
+                format!(" {} {} ", v.title(), app.items.len())
+            } else {
+                format!(" {} ", v.title())
+            };
+            spans.push(Span::styled(
+                label,
+                Style::default().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(format!(" {} ", v.title()), Style::default().fg(Color::Gray)));
+        }
+        spans.push(Span::raw(" "));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_table(f: &mut Frame, app: &App, area: Rect) {
@@ -125,10 +143,9 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     });
 
     let widths = column_widths(app.view);
-    let title = format!(" {} ({}) ", app.view.title(), vis.len());
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(Color::DarkGray)))
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(Color::DarkGray)))
         .column_spacing(2);
     f.render_widget(table, area);
 }
@@ -241,7 +258,7 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
         app.log_title, follow, wrap, start, end, total, filt
     );
     let mut p = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(ACCENT)));
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(title).border_style(Style::default().fg(ACCENT)));
     if app.log_wrap {
         p = p.wrap(Wrap { trim: false });
     }
@@ -259,7 +276,7 @@ fn render_inspect(f: &mut Frame, app: &App, area: Rect) {
         .collect();
     let title = format!(" inspect: {} ", app.inspect_title);
     let p = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title(title).border_style(Style::default().fg(ACCENT)));
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(title).border_style(Style::default().fg(ACCENT)));
     f.render_widget(p, area);
 }
 
@@ -276,7 +293,7 @@ fn level_color(pct: f64) -> Color {
 fn render_stats(f: &mut Frame, app: &App, area: Rect) {
     let s = app.stats.clone().unwrap_or_default();
     let outer = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::ALL).border_type(BorderType::Rounded)
         .title(format!(" stats: {} ", app.stats_title))
         .border_style(Style::default().fg(ACCENT));
     let inner = outer.inner(area);
@@ -356,10 +373,28 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
             Span::raw(app.filter.clone()),
             Span::styled(if app.filtering { "▏" } else { "" }, Style::default().fg(Color::Yellow)),
         ])
+    } else if !app.status.is_empty() {
+        let color = if app.status.starts_with('⚠') { Color::Red } else { Color::Gray };
+        Line::from(Span::styled(app.status.clone(), Style::default().fg(color)))
     } else {
-        Line::from(vec![Span::styled(app.status.clone(), Style::default().fg(Color::Gray))])
+        Line::from(Span::styled(view_hint(app.view), Style::default().fg(Color::DarkGray)))
     };
     f.render_widget(Paragraph::new(content), area);
+}
+
+/// Contextual keybinding hint for the footer, per view.
+fn view_hint(view: View) -> &'static str {
+    let keys = match view {
+        View::Containers => "Enter logs · i inspect · s/r/S stop/restart/start · e exec · A attach · x del",
+        View::Images => "i inspect · x del · :prune",
+        View::Services => "Enter tasks · l logs · i inspect · +/- scale",
+        View::Nodes => "i inspect",
+        View::Volumes => "i inspect · x del · u sizes",
+        View::Networks => "i inspect · x del",
+        View::Contexts => "Enter switch context",
+        View::ServiceTasks => "Esc back · l logs · i inspect",
+    };
+    keys
 }
 
 fn render_help(f: &mut Frame, area: Rect) {
@@ -397,7 +432,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  q / Ctrl-c", "quit"),
     ];
     let p = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" Help ").border_style(Style::default().fg(ACCENT)))
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Help ").border_style(Style::default().fg(ACCENT)))
         .wrap(Wrap { trim: false });
     f.render_widget(p, popup);
 }
@@ -428,7 +463,7 @@ fn render_confirm(f: &mut Frame, prompt: &str, area: Rect) {
         .centered(),
     ];
     let p = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title(" Confirm ").border_style(Style::default().fg(Color::Red)));
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Confirm ").border_style(Style::default().fg(Color::Red)));
     f.render_widget(p, popup);
 }
 

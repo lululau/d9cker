@@ -275,7 +275,8 @@ impl App {
                         }
                         None => self.clamp_selection(),
                     }
-                    self.status = format!("{} — {} item(s)", self.view.title(), self.items.len());
+                    // clear stale status so the footer falls back to key hints
+                    self.status.clear();
                 }
             }
             Msg::Meta { swarm } => self.swarm = swarm,
