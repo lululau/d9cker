@@ -14,7 +14,7 @@ const ACCENT: Color = Color::Cyan;
 pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // status line
-        Constraint::Length(1), // tab bar
+        Constraint::Length(2), // tab bar (raised notebook tabs)
         Constraint::Min(1),    // content
         Constraint::Length(1), // footer
     ])
@@ -82,25 +82,61 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
-    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
+    let w = area.width as usize;
+    let dark = Style::default().fg(Color::DarkGray);
+    let acc = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let gray = Style::default().fg(Color::Gray);
+
+    let mut top: Vec<Span> = Vec::new(); // raised caps row
+    let mut bot: Vec<Span> = Vec::new(); // content-box top border + labels
+    let mut used = 0usize;
+
+    // box top-left corner (bottom row); nothing above it
+    top.push(Span::raw(" "));
+    bot.push(Span::styled("╭", dark));
+    used += 1;
+
     for v in crate::app::TABS {
+        // a little border segment before each tab
+        top.push(Span::raw("  "));
+        bot.push(Span::styled("──", dark));
+        used += 2;
+
         let active = app.view == v || (app.view == View::ServiceTasks && v == View::Services);
-        if active {
-            let label = if app.view == v {
-                format!(" {} {} ", v.title(), app.items.len())
-            } else {
-                format!(" {} ", v.title())
-            };
-            spans.push(Span::styled(
-                label,
-                Style::default().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD),
-            ));
+        let label = if active && app.view == v {
+            format!(" {} {} ", v.title(), app.items.len())
         } else {
-            spans.push(Span::styled(format!(" {} ", v.title()), Style::default().fg(Color::Gray)));
+            format!(" {} ", v.title())
+        };
+        let l = label.chars().count();
+        if used + l + 2 >= w {
+            break;
         }
-        spans.push(Span::raw(" "));
+        if active {
+            // raised tab: rounded cap above, flaring corners into the border below
+            top.push(Span::styled(format!("╭{}╮", "─".repeat(l)), acc));
+            bot.push(Span::styled("╯", acc));
+            bot.push(Span::styled(label, acc));
+            bot.push(Span::styled("╰", acc));
+            used += l + 2;
+        } else {
+            top.push(Span::raw(" ".repeat(l)));
+            bot.push(Span::styled(label, gray));
+            used += l;
+        }
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
+
+    // fill to the right edge and close the box top-right corner
+    if used < w {
+        let fill = w - used - 1;
+        top.push(Span::raw(" ".repeat(fill + 1)));
+        bot.push(Span::styled("─".repeat(fill), dark));
+        bot.push(Span::styled("╮", dark));
+    }
+
+    f.render_widget(Paragraph::new(Line::from(top)), rows[0]);
+    f.render_widget(Paragraph::new(Line::from(bot)), rows[1]);
 }
 
 fn render_table(f: &mut Frame, app: &App, area: Rect) {
@@ -145,7 +181,12 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     let widths = column_widths(app.view);
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(Color::DarkGray)))
+        .block(
+            Block::default()
+                .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
         .column_spacing(2);
     f.render_widget(table, area);
 }
