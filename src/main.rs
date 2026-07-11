@@ -97,6 +97,9 @@ async fn run(
                         if let Some(id) = app.take_pending_exec() {
                             exec_shell(terminal, app, &id).await?;
                         }
+                        if let Some(id) = app.take_pending_attach() {
+                            attach_container(terminal, app, &id).await?;
+                        }
                     }
                     Some(Ok(_)) => {}       // resize, mouse, focus — redraw next loop
                     Some(Err(_)) | None => break,
@@ -128,6 +131,8 @@ async fn smoke() -> Result<()> {
         docker::View::Images,
         docker::View::Services,
         docker::View::Nodes,
+        docker::View::Volumes,
+        docker::View::Networks,
     ] {
         match docker::list(&docker, view, "").await {
             Ok(items) => {
@@ -169,6 +174,25 @@ async fn exec_shell(terminal: &mut ratatui::DefaultTerminal, app: &App, id: &str
         "-c",
         "command -v bash >/dev/null 2>&1 && exec bash || exec sh",
     ]);
+    let _ = cmd.status().await;
+
+    *terminal = ratatui::init();
+    terminal.clear()?;
+    Ok(())
+}
+
+/// Suspend the TUI and attach to a container's stdio via the CLI. Detach with
+/// the usual Ctrl-P Ctrl-Q sequence.
+async fn attach_container(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &App,
+    id: &str,
+) -> Result<()> {
+    ratatui::restore();
+
+    let mut cmd = tokio::process::Command::new("docker");
+    cmd.arg("--context").arg(&app.context);
+    cmd.args(["attach", "--sig-proxy=false", id]);
     let _ = cmd.status().await;
 
     *terminal = ratatui::init();

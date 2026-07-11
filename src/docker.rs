@@ -8,11 +8,13 @@
 use crate::contexts;
 use anyhow::{anyhow, Result};
 use bollard::query_parameters::{
-    InspectContainerOptions, ListContainersOptionsBuilder, ListImagesOptionsBuilder,
-    ListNodesOptions, ListServicesOptions, ListTasksOptionsBuilder, LogsOptionsBuilder,
-    StatsOptionsBuilder,
-    InspectServiceOptions, RemoveContainerOptionsBuilder, RestartContainerOptions,
-    StartContainerOptions, StopContainerOptions,
+    InspectContainerOptions, InspectNetworkOptions, InspectServiceOptions,
+    ListContainersOptionsBuilder, ListImagesOptionsBuilder, ListNetworksOptions,
+    ListNodesOptions, ListServicesOptions, ListTasksOptionsBuilder, ListVolumesOptions,
+    LogsOptionsBuilder, PruneImagesOptions, RemoveContainerOptionsBuilder,
+    RemoveImageOptionsBuilder, RemoveVolumeOptionsBuilder, RestartContainerOptions,
+    StartContainerOptions, StatsOptionsBuilder, StopContainerOptions,
+    UpdateServiceOptionsBuilder,
 };
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures::stream::{BoxStream, StreamExt};
@@ -31,6 +33,8 @@ pub enum View {
     Nodes,
     Contexts,
     ServiceTasks,
+    Volumes,
+    Networks,
 }
 
 impl View {
@@ -42,6 +46,8 @@ impl View {
             View::Nodes => "Nodes",
             View::Contexts => "Contexts",
             View::ServiceTasks => "Service Tasks",
+            View::Volumes => "Volumes",
+            View::Networks => "Networks",
         }
     }
 
@@ -53,6 +59,8 @@ impl View {
             View::Nodes => &["HOSTNAME", "STATUS", "AVAILABILITY", "MANAGER", "ENGINE"],
             View::Contexts => &["", "NAME", "DESCRIPTION", "ENDPOINT"],
             View::ServiceTasks => &["NAME", "NODE", "DESIRED", "CURRENT", "IMAGE", "ERROR"],
+            View::Volumes => &["NAME", "DRIVER", "SCOPE", "MOUNTPOINT"],
+            View::Networks => &["NAME", "DRIVER", "SCOPE", "ID"],
         }
     }
 
@@ -62,6 +70,8 @@ impl View {
             View::Images => Some("image"),
             View::Services => Some("service"),
             View::Nodes => Some("node"),
+            View::Volumes => Some("volume"),
+            View::Networks => Some("network"),
             _ => None,
         }
     }
@@ -326,6 +336,38 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                 })
                 .collect()
         }
+        View::Volumes => {
+            let resp = docker.list_volumes(None::<ListVolumesOptions>).await?;
+            resp.volumes
+                .unwrap_or_default()
+                .into_iter()
+                .map(|v| {
+                    let cells = vec![
+                        v.name.clone(),
+                        v.driver.clone(),
+                        opt_estr(&v.scope),
+                        v.mountpoint.clone(),
+                    ];
+                    Item { id: v.name.clone(), name: v.name, cells }
+                })
+                .collect()
+        }
+        View::Networks => {
+            let nets = docker.list_networks(None::<ListNetworksOptions>).await?;
+            nets.into_iter()
+                .map(|n| {
+                    let id = n.id.unwrap_or_default();
+                    let name = n.name.unwrap_or_default();
+                    let cells = vec![
+                        name.clone(),
+                        n.driver.unwrap_or_default(),
+                        n.scope.unwrap_or_default(),
+                        short(&id),
+                    ];
+                    Item { id, name, cells }
+                })
+                .collect()
+        }
         View::Contexts => contexts::load_contexts()
             .into_iter()
             .map(|c| {
@@ -398,6 +440,10 @@ pub async fn inspect(docker: &Docker, kind: &str, id: &str) -> Result<String> {
         "image" => serde_json::to_string_pretty(&docker.inspect_image(id).await?)?,
         "service" => serde_json::to_string_pretty(&docker.inspect_service(id, None::<InspectServiceOptions>).await?)?,
         "node" => serde_json::to_string_pretty(&docker.inspect_node(id).await?)?,
+        "volume" => serde_json::to_string_pretty(&docker.inspect_volume(id).await?)?,
+        "network" => {
+            serde_json::to_string_pretty(&docker.inspect_network(id, None::<InspectNetworkOptions>).await?)?
+        }
         other => return Err(anyhow!("cannot inspect '{other}'")),
     };
     Ok(json)
@@ -537,4 +583,56 @@ fn compute_stats(s: &bollard::models::ContainerStatsResponse) -> StatsSample {
 
     out.pids = s.pids_stats.as_ref().and_then(|p| p.current).unwrap_or(0);
     out
+}
+
+// ---- resource deletion / swarm scale / prune ---------------------------
+
+/// Delete the selected resource for a view (force where applicable).
+pub async fn delete(docker: &Docker, view: View, id: &str) -> Result<()> {
+    match view {
+        View::Containers => {
+            let opts = RemoveContainerOptionsBuilder::default().force(true).build();
+            docker.remove_container(id, Some(opts)).await?;
+        }
+        View::Images => {
+            let opts = RemoveImageOptionsBuilder::default().force(true).build();
+            docker.remove_image(id, Some(opts), None).await?;
+        }
+        View::Volumes => {
+            let opts = RemoveVolumeOptionsBuilder::default().force(true).build();
+            docker.remove_volume(id, Some(opts)).await?;
+        }
+        View::Networks => docker.remove_network(id).await?,
+        _ => return Err(anyhow!("cannot delete from this view")),
+    }
+    Ok(())
+}
+
+/// Scale a replicated swarm service by `delta` replicas.
+pub async fn scale_service(docker: &Docker, name: &str, delta: i64) -> Result<String> {
+    let svc = docker.inspect_service(name, None::<InspectServiceOptions>).await?;
+    let version = svc
+        .version
+        .and_then(|v| v.index)
+        .ok_or_else(|| anyhow!("service has no version"))? as i32;
+    let mut spec = svc.spec.ok_or_else(|| anyhow!("service has no spec"))?;
+    let repl = spec
+        .mode
+        .as_mut()
+        .and_then(|m| m.replicated.as_mut())
+        .ok_or_else(|| anyhow!("not a replicated service"))?;
+    let cur = repl.replicas.unwrap_or(0);
+    let next = (cur + delta).max(0);
+    repl.replicas = Some(next);
+    let opts = UpdateServiceOptionsBuilder::default().version(version).build();
+    docker.update_service(name, spec, opts, None).await?;
+    Ok(format!("scaled {name}: {cur} -> {next}"))
+}
+
+/// Prune dangling images; returns a human summary.
+pub async fn prune_images(docker: &Docker) -> Result<String> {
+    let resp = docker.prune_images(None::<PruneImagesOptions>).await?;
+    let n = resp.images_deleted.map(|v| v.len()).unwrap_or(0);
+    let reclaimed = resp.space_reclaimed.unwrap_or(0);
+    Ok(format!("pruned {n} image(s), reclaimed {}", human_size(reclaimed)))
 }

@@ -12,11 +12,13 @@ use tokio::task::AbortHandle;
 const LOG_CAP: usize = 5000;
 
 /// The tab order for h/l navigation and the header tab bar.
-pub const TABS: [View; 5] = [
+pub const TABS: [View; 7] = [
     View::Containers,
     View::Images,
     View::Services,
     View::Nodes,
+    View::Volumes,
+    View::Networks,
     View::Contexts,
 ];
 
@@ -87,6 +89,7 @@ pub struct Confirm {
     pub verb: String,
     pub id: String,
     pub label: String,
+    pub view: View,
 }
 
 pub struct App {
@@ -135,6 +138,7 @@ pub struct App {
     stats_task: Option<AbortHandle>,
 
     pending_exec: Option<String>,
+    pending_attach: Option<String>,
 }
 
 impl App {
@@ -178,6 +182,7 @@ impl App {
             stats_title: String::new(),
             stats_task: None,
             pending_exec: None,
+            pending_attach: None,
         })
     }
 
@@ -260,7 +265,12 @@ impl App {
                     self.status = status;
                 }
             }
-            Msg::Info(m) => self.status = m,
+            Msg::Info(m) => {
+                self.status = m;
+                if self.mode == Mode::Table {
+                    self.refresh();
+                }
+            }
         }
     }
 
@@ -490,10 +500,6 @@ impl App {
         let Some(it) = self.selected_item() else { return };
         let id = it.id.clone();
         let label = it.name.clone();
-        if verb == "rm" {
-            self.confirm = Some(Confirm { verb: verb.into(), id, label });
-            return;
-        }
         self.run_action(verb.to_string(), id, label);
     }
 
@@ -510,11 +516,82 @@ impl App {
         });
     }
 
+    // ---- delete / scale / prune ----------------------------------------
+
+    fn delete_selected(&mut self) {
+        let noun = match self.view {
+            View::Containers => "container",
+            View::Images => "image",
+            View::Volumes => "volume",
+            View::Networks => "network",
+            _ => {
+                self.status = "delete: not available here".into();
+                return;
+            }
+        };
+        let Some(it) = self.selected_item() else { return };
+        self.confirm = Some(Confirm {
+            verb: format!("remove {noun}"),
+            id: it.id.clone(),
+            label: it.name.clone(),
+            view: self.view,
+        });
+    }
+
+    fn run_delete(&mut self, view: View, id: String, label: String) {
+        self.status = format!("removing {label}…");
+        let tx = self.tx.clone();
+        let docker = self.docker.clone();
+        tokio::spawn(async move {
+            let msg = match docker::delete(&docker, view, &id).await {
+                Ok(()) => Msg::Info(format!("removed {label} ✓")),
+                Err(e) => Msg::Error(format!("remove {label}: {e}")),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    fn scale(&mut self, delta: i64) {
+        if self.view != View::Services {
+            self.status = "scale: only for services".into();
+            return;
+        }
+        let Some(it) = self.selected_item() else { return };
+        let name = it.name.clone();
+        self.status = format!("scaling {name}…");
+        let tx = self.tx.clone();
+        let docker = self.docker.clone();
+        tokio::spawn(async move {
+            let msg = match docker::scale_service(&docker, &name, delta).await {
+                Ok(m) => Msg::Info(m),
+                Err(e) => Msg::Error(format!("scale: {e}")),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    fn prune_images(&mut self) {
+        self.status = "pruning dangling images…".into();
+        let tx = self.tx.clone();
+        let docker = self.docker.clone();
+        tokio::spawn(async move {
+            let msg = match docker::prune_images(&docker).await {
+                Ok(m) => Msg::Info(m),
+                Err(e) => Msg::Error(format!("prune: {e}")),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
     // ---- exec ----------------------------------------------------------
 
     /// Consumed by the main loop, which suspends the TUI and runs `docker exec`.
     pub fn take_pending_exec(&mut self) -> Option<String> {
         self.pending_exec.take()
+    }
+
+    pub fn take_pending_attach(&mut self) -> Option<String> {
+        self.pending_attach.take()
     }
 
     // ---- key handling --------------------------------------------------
@@ -557,7 +634,7 @@ impl App {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     let c = self.confirm.take().unwrap();
-                    self.run_action(c.verb, c.id, c.label);
+                    self.run_delete(c.view, c.id, c.label);
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => self.confirm = None,
                 _ => {}
@@ -598,6 +675,8 @@ impl App {
             KeyCode::Char('3') => self.switch_view(View::Services),
             KeyCode::Char('4') => self.switch_view(View::Nodes),
             KeyCode::Char('5') => self.switch_view(View::Contexts),
+            KeyCode::Char('6') => self.switch_view(View::Volumes),
+            KeyCode::Char('7') => self.switch_view(View::Networks),
             KeyCode::Char(':') => {
                 self.commanding = true;
                 self.command.clear();
@@ -631,7 +710,16 @@ impl App {
             KeyCode::Char('S') => self.action("start"),
             KeyCode::Char('p') => self.action("pause"),
             KeyCode::Char('P') => self.action("unpause"),
-            KeyCode::Char('x') => self.action("rm"),
+            KeyCode::Char('x') => self.delete_selected(),
+            KeyCode::Char('+') | KeyCode::Char('=') => self.scale(1),
+            KeyCode::Char('-') => self.scale(-1),
+            KeyCode::Char('A') => {
+                if self.view == View::Containers {
+                    if let Some(it) = self.selected_item() {
+                        self.pending_attach = Some(it.id.clone());
+                    }
+                }
+            }
             KeyCode::Char('o') => self.cycle_sort(),
             KeyCode::Char('O') => self.sort_desc = !self.sort_desc,
             KeyCode::Char('?') => self.mode = Mode::Help,
@@ -674,6 +762,7 @@ impl App {
             "no" | "node" | "nodes" => self.switch_view(View::Nodes),
             "ctx" | "context" | "contexts" => self.switch_view(View::Contexts),
             "q" | "quit" => self.should_quit = true,
+            "prune" => self.prune_images(),
             "" => {}
             other => self.status = format!("unknown command ':{other}'"),
         }
