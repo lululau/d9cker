@@ -4,6 +4,7 @@ use crate::contexts;
 use crate::docker::{self, Item, StatsSample, View};
 use bollard::Docker;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt;
 use tokio::sync::mpsc::UnboundedSender;
@@ -70,6 +71,7 @@ pub enum Msg {
     LogLine(String),
     LogEnded,
     Stats(StatsSample),
+    VolumeSizes(HashMap<String, i64>),
     Inspect(String),
     Error(String),
     Info(String),
@@ -119,6 +121,7 @@ pub struct App {
 
     pub sort_col: Option<usize>,
     pub sort_desc: bool,
+    vol_sizes: HashMap<String, i64>,
 
     pub logs: Vec<String>,
     pub log_title: String,
@@ -167,6 +170,7 @@ impl App {
             prev_view: View::Containers,
             sort_col: None,
             sort_desc: false,
+            vol_sizes: HashMap::new(),
             logs: Vec::new(),
             log_title: String::new(),
             log_follow: true,
@@ -220,6 +224,30 @@ impl App {
         });
     }
 
+    fn fetch_volume_sizes(&self) {
+        let tx = self.tx.clone();
+        let docker = self.docker.clone();
+        tokio::spawn(async move {
+            let sizes = docker::volume_sizes(&docker).await;
+            let _ = tx.send(Msg::VolumeSizes(sizes));
+        });
+    }
+
+    /// Overlay cached df sizes onto the Volumes SIZE column (index 2).
+    fn apply_volume_sizes(&mut self) {
+        if self.view != View::Volumes {
+            return;
+        }
+        for it in &mut self.items {
+            if let Some(cell) = it.cells.get_mut(2) {
+                *cell = match self.vol_sizes.get(&it.name) {
+                    Some(s) if *s >= 0 => docker::human_size(*s),
+                    _ => "?".to_string(),
+                };
+            }
+        }
+    }
+
     pub fn on_msg(&mut self, msg: Msg) {
         match msg {
             Msg::Data { view, arg, items } => {
@@ -229,6 +257,9 @@ impl App {
                     self.items = items;
                     self.loading = false;
                     self.clamp_selection();
+                    if self.view == View::Volumes {
+                        self.apply_volume_sizes();
+                    }
                     self.status = format!("{} — {} item(s)", self.view.title(), self.items.len());
                 }
             }
@@ -254,6 +285,11 @@ impl App {
                 if self.mode == Mode::Stats {
                     self.stats = Some(sample);
                 }
+            }
+            Msg::VolumeSizes(sizes) => {
+                self.vol_sizes = sizes;
+                self.apply_volume_sizes();
+                self.status = format!("volume sizes updated ({})", self.vol_sizes.len());
             }
             Msg::Inspect(text) => {
                 self.inspect_lines = text.lines().map(|l| l.to_string()).collect();
@@ -332,6 +368,9 @@ impl App {
         self.sort_col = None;
         self.sort_desc = false;
         self.refresh();
+        if view == View::Volumes && self.vol_sizes.is_empty() {
+            self.fetch_volume_sizes();
+        }
     }
 
     fn drill_into_service(&mut self) {
@@ -357,6 +396,7 @@ impl App {
                 self.docker = d;
                 self.context = name.clone();
                 self.swarm.clear();
+                self.vol_sizes.clear();
                 self.status = format!("switched to context '{name}'");
                 self.refresh_meta();
                 self.switch_view(View::Containers);
@@ -712,6 +752,12 @@ impl App {
             KeyCode::Char('x') => self.delete_selected(),
             KeyCode::Char('+') | KeyCode::Char('=') => self.scale(1),
             KeyCode::Char('-') => self.scale(-1),
+            KeyCode::Char('u') => {
+                if self.view == View::Volumes {
+                    self.status = "refreshing volume sizes…".into();
+                    self.fetch_volume_sizes();
+                }
+            }
             KeyCode::Char('A') => {
                 if self.view == View::Containers {
                     if let Some(it) = self.selected_item() {
@@ -890,6 +936,7 @@ impl App {
 mod tests {
     use super::{cmp_cells, parse_size};
     use std::cmp::Ordering;
+use std::collections::HashMap;
 
     #[test]
     fn parse_size_units() {

@@ -160,11 +160,12 @@ fn column_widths(view: View) -> Vec<Constraint> {
     match view {
         View::Containers => vec![
             Constraint::Length(12),
-            Constraint::Percentage(22),
-            Constraint::Percentage(28),
-            Constraint::Length(9),
             Constraint::Percentage(20),
-            Constraint::Percentage(20),
+            Constraint::Percentage(24),
+            Constraint::Length(8),
+            Constraint::Percentage(18),
+            Constraint::Length(16),
+            Constraint::Percentage(14),
         ],
         View::Images => vec![
             Constraint::Percentage(40),
@@ -194,15 +195,17 @@ fn column_widths(view: View) -> Vec<Constraint> {
             Constraint::Percentage(40),
         ],
         View::Volumes => vec![
-            Constraint::Percentage(34),
-            Constraint::Length(12),
+            Constraint::Percentage(30),
+            Constraint::Length(10),
+            Constraint::Length(10),
             Constraint::Length(8),
-            Constraint::Percentage(46),
+            Constraint::Percentage(42),
         ],
         View::Networks => vec![
-            Constraint::Percentage(34),
-            Constraint::Length(14),
-            Constraint::Length(10),
+            Constraint::Percentage(28),
+            Constraint::Length(12),
+            Constraint::Length(8),
+            Constraint::Length(20),
             Constraint::Length(14),
         ],
         View::ServiceTasks => vec![
@@ -385,6 +388,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  + / -", "scale service up / down (Services)"),
         help_line("  A", "attach to container (Ctrl-P Ctrl-Q to detach)"),
         help_line("  :prune", "prune dangling images"),
+        help_line("  u", "refresh volume sizes (Volumes)"),
         help_line("Logs / Inspect", ""),
         help_line("  f / w", "toggle follow / wrap (logs)"),
         help_line("  / , s", "search-filter / save logs to file"),

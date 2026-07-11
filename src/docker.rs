@@ -8,7 +8,7 @@
 use crate::contexts;
 use anyhow::{anyhow, Result};
 use bollard::query_parameters::{
-    InspectContainerOptions, InspectNetworkOptions, InspectServiceOptions,
+    DataUsageOptions, InspectContainerOptions, InspectNetworkOptions, InspectServiceOptions,
     ListContainersOptionsBuilder, ListImagesOptionsBuilder, ListNetworksOptions,
     ListNodesOptions, ListServicesOptions, ListTasksOptionsBuilder, ListVolumesOptions,
     LogsOptionsBuilder, PruneImagesOptions, RemoveContainerOptionsBuilder,
@@ -53,14 +53,14 @@ impl View {
 
     pub fn columns(self) -> &'static [&'static str] {
         match self {
-            View::Containers => &["ID", "NAME", "IMAGE", "STATE", "STATUS", "PORTS"],
+            View::Containers => &["ID", "NAME", "IMAGE", "STATE", "STATUS", "IP", "PORTS"],
             View::Images => &["REPOSITORY", "TAG", "ID", "SIZE", "CREATED"],
             View::Services => &["NAME", "MODE", "REPLICAS", "IMAGE", "PORTS"],
             View::Nodes => &["HOSTNAME", "STATUS", "AVAILABILITY", "MANAGER", "ENGINE"],
             View::Contexts => &["", "NAME", "DESCRIPTION", "ENDPOINT"],
             View::ServiceTasks => &["NAME", "NODE", "DESIRED", "CURRENT", "IMAGE", "ERROR"],
-            View::Volumes => &["NAME", "DRIVER", "SCOPE", "MOUNTPOINT"],
-            View::Networks => &["NAME", "DRIVER", "SCOPE", "ID"],
+            View::Volumes => &["NAME", "DRIVER", "SIZE", "SCOPE", "MOUNTPOINT"],
+            View::Networks => &["NAME", "DRIVER", "SCOPE", "SUBNET", "ID"],
         }
     }
 
@@ -177,12 +177,28 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         .trim_start_matches('/')
                         .to_string();
                     let ports = fmt_ports(&c.ports);
+                    let ip = c
+                        .network_settings
+                        .as_ref()
+                        .and_then(|ns| ns.networks.as_ref())
+                        .map(|nets| {
+                            let mut ips: Vec<String> = nets
+                                .values()
+                                .filter_map(|e| e.ip_address.clone())
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                            ips.sort();
+                            ips.dedup();
+                            ips.join(", ")
+                        })
+                        .unwrap_or_default();
                     let cells = vec![
                         short(&id),
                         name.clone(),
                         clean_image(&c.image.unwrap_or_default()),
                         opt_estr(&c.state),
                         c.status.unwrap_or_default(),
+                        ip,
                         ports,
                     ];
                     Item { id, name, cells }
@@ -342,9 +358,11 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                 .unwrap_or_default()
                 .into_iter()
                 .map(|v| {
+                    // SIZE is filled in lazily by the app (passive df peek + cache)
                     let cells = vec![
                         v.name.clone(),
                         v.driver.clone(),
+                        "?".to_string(),
                         opt_estr(&v.scope),
                         v.mountpoint.clone(),
                     ];
@@ -358,10 +376,22 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                 .map(|n| {
                     let id = n.id.unwrap_or_default();
                     let name = n.name.unwrap_or_default();
+                    let subnet = n
+                        .ipam
+                        .as_ref()
+                        .and_then(|i| i.config.as_ref())
+                        .map(|cfgs| {
+                            cfgs.iter()
+                                .filter_map(|c| c.subnet.clone())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
                     let cells = vec![
                         name.clone(),
                         n.driver.unwrap_or_default(),
                         n.scope.unwrap_or_default(),
+                        subnet,
                         short(&id),
                     ];
                     Item { id, name, cells }
@@ -402,6 +432,29 @@ fn fmt_ports(ports: &Option<Vec<bollard::models::PortSummary>>) -> String {
 }
 
 // ---- swarm meta --------------------------------------------------------
+
+/// Map volume name -> on-disk size (bytes) via the system df endpoint.
+/// df returns volume items as untyped JSON, so we pluck Name / UsageData.Size.
+pub async fn volume_sizes(docker: &Docker) -> std::collections::HashMap<String, i64> {
+    let mut m = std::collections::HashMap::new();
+    if let Ok(df) = docker.df(None::<DataUsageOptions>).await {
+        if let Some(items) = df.volume_usage.and_then(|v| v.items) {
+            for it in items {
+                let name = it.get("Name").and_then(|v| v.as_str()).unwrap_or("");
+                if name.is_empty() {
+                    continue;
+                }
+                let size = it
+                    .get("UsageData")
+                    .and_then(|u| u.get("Size"))
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or(-1);
+                m.insert(name.to_string(), size);
+            }
+        }
+    }
+    m
+}
 
 /// Map swarm node ids to hostnames (for the service-tasks NODE column).
 async fn node_hostnames(docker: &Docker) -> HashMap<String, String> {
