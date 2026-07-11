@@ -79,7 +79,7 @@ async fn run(
         tokio::select! {
             _ = ticker.tick() => {
                 // periodic auto-refresh only while browsing a table
-                if app.mode == Mode::Table && app.confirm.is_none() && app.view.auto_refresh() {
+                if app.mode == Mode::Table && app.confirm.is_none() {
                     app.refresh();
                 }
             }

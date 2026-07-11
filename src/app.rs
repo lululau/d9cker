@@ -257,11 +257,23 @@ impl App {
                 let fresh = view == self.view
                     && (view != View::ServiceTasks || arg == self.drill_service);
                 if fresh {
+                    // remember the highlighted resource so the cursor doesn't
+                    // jump when the list is replaced by a refresh
+                    let sel_id = self.selected_item().map(|it| it.id.clone());
                     self.items = items;
                     self.loading = false;
-                    self.clamp_selection();
                     if self.view == View::Volumes {
                         self.apply_volume_sizes();
+                    }
+                    match sel_id {
+                        Some(id) => {
+                            let vis = self.visible_indices();
+                            self.selected = vis
+                                .iter()
+                                .position(|&i| self.items[i].id == id)
+                                .unwrap_or_else(|| self.selected.min(vis.len().saturating_sub(1)));
+                        }
+                        None => self.clamp_selection(),
                     }
                     self.status = format!("{} — {} item(s)", self.view.title(), self.items.len());
                 }

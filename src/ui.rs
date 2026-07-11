@@ -54,7 +54,6 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         ),
         Span::raw("   view: "),
         Span::styled(app.view.title(), Style::default().fg(Color::Magenta).bold()),
-        Span::raw(if app.loading { "  ⟳" } else { "" }),
     ]);
     // Tab bar with the active view highlighted.
     let mut hint_spans: Vec<Span> = Vec::new();
@@ -389,7 +388,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  A", "attach to container (Ctrl-P Ctrl-Q to detach)"),
         help_line("  :prune", "prune dangling images"),
         help_line("  u", "refresh volume sizes (Volumes)"),
-        help_line("  Ctrl-r", "manual refresh (Images/Volumes/Networks: no auto-poll)"),
+        help_line("  Ctrl-r", "manual refresh current view (+ volume sizes)"),
         help_line("Logs / Inspect", ""),
         help_line("  f / w", "toggle follow / wrap (logs)"),
         help_line("  / , s", "search-filter / save logs to file"),
