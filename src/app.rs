@@ -10,6 +10,17 @@ use tokio::task::AbortHandle;
 
 const LOG_CAP: usize = 5000;
 
+/// Turn a raw bollard/transport error into an actionable one-liner.
+fn humanize_error(e: &str) -> String {
+    if e.contains("permission denied") && e.contains("docker.sock") {
+        format!("{e}  — 远程用户无 docker socket 权限,请将其加入 docker 组")
+    } else if e.contains("raw stream connection") || e.contains("SendRequest") {
+        format!("{e}  — 无法连接该 context 的 docker daemon(检查 ssh 可达性/权限)")
+    } else {
+        e.to_string()
+    }
+}
+
 /// Messages flowing from background tasks back into the UI loop.
 #[derive(Debug)]
 pub enum Msg {
@@ -180,7 +191,10 @@ impl App {
             }
             Msg::Error(e) => {
                 self.loading = false;
-                self.status = format!("⚠ {e}");
+                let status = format!("⚠ {}", humanize_error(&e));
+                if status != self.status {
+                    self.status = status;
+                }
             }
             Msg::Info(m) => self.status = m,
         }
