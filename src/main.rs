@@ -33,6 +33,10 @@ async fn main() -> Result<()> {
     app.refresh();
     app.refresh_meta();
 
+    // Route stderr (incl. the ssh child's diagnostics) to a logfile so it can't
+    // corrupt the alternate screen. Child processes inherit the redirected fd.
+    let log_path = redirect_stderr_to_log();
+
     let mut terminal = ratatui::init();
     let mut events = EventStream::new();
     let mut ticker = interval(Duration::from_secs(3));
@@ -40,7 +44,26 @@ async fn main() -> Result<()> {
     let res = run(&mut terminal, &mut app, &mut rx, &mut events, &mut ticker).await;
 
     ratatui::restore();
+    if let Some(path) = log_path {
+        println!("d9cker: session stderr logged to {}", path.display());
+    }
     res
+}
+
+/// Redirect this process's stderr (fd 2) to a logfile and return its path.
+/// The ssh transport spawned by bollard/openssh inherits fd 2, so its
+/// connection diagnostics land in the log instead of over the TUI.
+fn redirect_stderr_to_log() -> Option<std::path::PathBuf> {
+    use std::os::unix::io::AsRawFd;
+    let dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    let path = std::path::Path::new(&dir).join("d9cker.log");
+    let file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()?;
+    // SAFETY: dup2 onto STDERR_FILENO; file fd is valid for the call.
+    unsafe {
+        libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+    }
+    std::mem::forget(file); // keep the fd open for the process lifetime
+    Some(path)
 }
 
 async fn run(

@@ -288,6 +288,7 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
             filters.insert("service".to_string(), vec![arg.to_string()]);
             let opts = ListTasksOptionsBuilder::default().filters(&filters).build();
             let tasks = docker.list_tasks(Some(opts)).await?;
+            let nodes = node_hostnames(docker).await;
             tasks
                 .into_iter()
                 .map(|t| {
@@ -301,7 +302,11 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         .unwrap_or_else(|| {
                             if slot.is_empty() { short(&id) } else { format!("{arg}.{slot}") }
                         });
-                    let node = short(&t.node_id.clone().unwrap_or_default());
+                    let node_id = t.node_id.clone().unwrap_or_default();
+                    let node = nodes
+                        .get(&node_id)
+                        .cloned()
+                        .unwrap_or_else(|| short(&node_id));
                     let desired = opt_estr(&t.desired_state);
                     let (current, err) = t
                         .status
@@ -354,6 +359,21 @@ fn fmt_ports(ports: &Option<Vec<bollard::models::PortSummary>>) -> String {
 }
 
 // ---- swarm meta --------------------------------------------------------
+
+/// Map swarm node ids to hostnames (for the service-tasks NODE column).
+async fn node_hostnames(docker: &Docker) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    if let Ok(nodes) = docker.list_nodes(None::<ListNodesOptions>).await {
+        for n in nodes {
+            if let (Some(id), Some(host)) =
+                (n.id, n.description.and_then(|d| d.hostname))
+            {
+                m.insert(id, host);
+            }
+        }
+    }
+    m
+}
 
 pub async fn swarm_state(docker: &Docker) -> String {
     match docker.info().await {
