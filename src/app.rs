@@ -670,13 +670,12 @@ impl App {
             KeyCode::Char('G') | KeyCode::End => {
                 self.selected = self.visible_indices().len().saturating_sub(1)
             }
-            KeyCode::Char('1') => self.switch_view(View::Containers),
-            KeyCode::Char('2') => self.switch_view(View::Images),
-            KeyCode::Char('3') => self.switch_view(View::Services),
-            KeyCode::Char('4') => self.switch_view(View::Nodes),
-            KeyCode::Char('5') => self.switch_view(View::Contexts),
-            KeyCode::Char('6') => self.switch_view(View::Volumes),
-            KeyCode::Char('7') => self.switch_view(View::Networks),
+            // digit keys follow the tab-bar order (TABS) so they always match
+            KeyCode::Char(c @ '1'..='7') => {
+                if let Some(&v) = TABS.get(c as usize - '1' as usize) {
+                    self.switch_view(v);
+                }
+            }
             KeyCode::Char(':') => {
                 self.commanding = true;
                 self.command.clear();
