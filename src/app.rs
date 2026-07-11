@@ -1,7 +1,7 @@
 //! Application state and input handling.
 
 use crate::contexts;
-use crate::docker::{self, Item, View};
+use crate::docker::{self, Item, StatsSample, View};
 use bollard::Docker;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt;
@@ -28,6 +28,7 @@ pub enum Msg {
     Meta { swarm: String },
     LogLine(String),
     LogEnded,
+    Stats(StatsSample),
     Inspect(String),
     Error(String),
     Info(String),
@@ -38,6 +39,7 @@ pub enum Mode {
     Table,
     Logs,
     Inspect,
+    Stats,
     Help,
 }
 
@@ -83,6 +85,10 @@ pub struct App {
     pub inspect_title: String,
     pub inspect_scroll: usize,
 
+    pub stats: Option<StatsSample>,
+    pub stats_title: String,
+    stats_task: Option<AbortHandle>,
+
     pending_exec: Option<String>,
 }
 
@@ -118,6 +124,9 @@ impl App {
             inspect_lines: Vec::new(),
             inspect_title: String::new(),
             inspect_scroll: 0,
+            stats: None,
+            stats_title: String::new(),
+            stats_task: None,
             pending_exec: None,
         })
     }
@@ -184,6 +193,11 @@ impl App {
             Msg::LogEnded => {
                 if self.mode == Mode::Logs {
                     self.status = "— log stream ended —".into();
+                }
+            }
+            Msg::Stats(sample) => {
+                if self.mode == Mode::Stats {
+                    self.stats = Some(sample);
                 }
             }
             Msg::Inspect(text) => {
@@ -313,6 +327,39 @@ impl App {
         }
     }
 
+    // ---- live stats ----------------------------------------------------
+
+    fn start_stats(&mut self) {
+        if self.view != View::Containers {
+            self.status = "stats: only for containers".into();
+            return;
+        }
+        let Some(it) = self.selected_item() else { return };
+        let id = it.id.clone();
+        let title = it.name.clone();
+        let mut stream = docker::stats_stream(&self.docker, &id);
+
+        self.stats = None;
+        self.stats_title = title;
+        self.mode = Mode::Stats;
+
+        let tx = self.tx.clone();
+        let handle = tokio::spawn(async move {
+            while let Some(sample) = stream.next().await {
+                if tx.send(Msg::Stats(sample)).is_err() {
+                    return;
+                }
+            }
+        });
+        self.stats_task = Some(handle.abort_handle());
+    }
+
+    fn stop_stats(&mut self) {
+        if let Some(h) = self.stats_task.take() {
+            h.abort();
+        }
+    }
+
     // ---- inspect -------------------------------------------------------
 
     fn start_inspect(&mut self) {
@@ -414,6 +461,7 @@ impl App {
             Mode::Table => self.table_key(key.code),
             Mode::Logs => self.logs_key(key.code),
             Mode::Inspect => self.inspect_key(key.code),
+            Mode::Stats => self.stats_key(key.code),
             Mode::Help => self.mode = Mode::Table,
         }
     }
@@ -456,6 +504,7 @@ impl App {
                     self.status = "exec: only for containers".into();
                 }
             }
+            KeyCode::Char('a') => self.start_stats(),
             KeyCode::Char('s') => self.action("stop"),
             KeyCode::Char('r') => self.action("restart"),
             KeyCode::Char('S') => self.action("start"),
@@ -568,6 +617,13 @@ impl App {
                 self.log_scroll = 0;
             }
             _ => {}
+        }
+    }
+
+    fn stats_key(&mut self, code: KeyCode) {
+        if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
+            self.stop_stats();
+            self.mode = Mode::Table;
         }
     }
 

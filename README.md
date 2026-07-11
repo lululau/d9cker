@@ -6,6 +6,7 @@ A [k9s](https://k9scli.io/)-style terminal UI for managing **Docker** and
 - 🔀 **Context switching** — browse and switch between all your `docker context`s
   (local sockets, TLS, and `ssh://` remotes) without touching your global config.
 - 🐝 **Swarm-aware** — list services and nodes, drill into a service's tasks.
+- 📊 **Live stats** — per-container CPU%, memory, network & block IO, PIDs, updating ~1/s.
 - 📜 **Live logs** — stream `logs -f` for any container or service, with follow,
   scrollback and filtering.
 - ⚡ **Lifecycle actions** — start / stop / restart / pause / remove containers.
@@ -45,6 +46,7 @@ Requires a working Rust toolchain and access to at least one Docker endpoint.
 | `/`            | filter rows (`Esc` clears)                         |
 | `Enter`        | Services → tasks · Contexts → switch context       |
 | `l`            | stream logs                                        |
+| `a`            | live stats panel (CPU / MEM / NET / BLK / PIDs)    |
 | `i`            | inspect (describe)                                 |
 | `e`            | exec shell into container                          |
 | `s` / `r` / `S`| stop / restart / start                             |

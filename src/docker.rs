@@ -10,6 +10,7 @@ use anyhow::{anyhow, Result};
 use bollard::query_parameters::{
     InspectContainerOptions, ListContainersOptionsBuilder, ListImagesOptionsBuilder,
     ListNodesOptions, ListServicesOptions, ListTasksOptionsBuilder, LogsOptionsBuilder,
+    StatsOptionsBuilder,
     InspectServiceOptions, RemoveContainerOptionsBuilder, RestartContainerOptions,
     StartContainerOptions, StopContainerOptions,
 };
@@ -100,7 +101,7 @@ fn clean_image(img: &str) -> String {
     img.split_once("@sha256:").map(|(h, _)| h).unwrap_or(img).to_string()
 }
 
-fn human_size(bytes: i64) -> String {
+pub fn human_size(bytes: i64) -> String {
     const U: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = bytes as f64;
     let mut i = 0;
@@ -444,4 +445,96 @@ pub fn log_stream(docker: &Docker, view: View, id: &str, tail: u32) -> BoxStream
         View::Services => docker.service_logs(id, Some(opts)).map(fmt_log).boxed(),
         _ => docker.logs(id, Some(opts)).map(fmt_log).boxed(),
     }
+}
+
+// ---- live container stats ----------------------------------------------
+
+/// A computed one-shot sample of a container's resource usage.
+#[derive(Clone, Debug, Default)]
+pub struct StatsSample {
+    pub cpu_pct: f64,
+    pub mem_used: u64,
+    pub mem_limit: u64,
+    pub mem_pct: f64,
+    pub net_rx: u64,
+    pub net_tx: u64,
+    pub blk_r: u64,
+    pub blk_w: u64,
+    pub pids: u64,
+}
+
+/// A stream of computed stats samples for a container (~1/sec from dockerd).
+pub fn stats_stream(docker: &Docker, id: &str) -> BoxStream<'static, StatsSample> {
+    let opts = StatsOptionsBuilder::default().stream(true).build();
+    docker
+        .stats(id, Some(opts))
+        .filter_map(|r| futures::future::ready(r.ok().map(|s| compute_stats(&s))))
+        .boxed()
+}
+
+fn compute_stats(s: &bollard::models::ContainerStatsResponse) -> StatsSample {
+    let mut out = StatsSample::default();
+
+    // CPU%: delta of container cpu usage over delta of system cpu usage, x nCPU.
+    // precpu_stats is the previous sample (populated from the 2nd message on).
+    if let (Some(cpu), Some(pre)) = (&s.cpu_stats, &s.precpu_stats) {
+        let cur = cpu.cpu_usage.as_ref().and_then(|u| u.total_usage).unwrap_or(0);
+        let prev = pre.cpu_usage.as_ref().and_then(|u| u.total_usage).unwrap_or(0);
+        let cur_sys = cpu.system_cpu_usage.unwrap_or(0);
+        let pre_sys = pre.system_cpu_usage.unwrap_or(0);
+        let cpu_delta = cur.saturating_sub(prev) as f64;
+        let sys_delta = cur_sys.saturating_sub(pre_sys) as f64;
+        let ncpu = cpu
+            .online_cpus
+            .or_else(|| {
+                cpu.cpu_usage
+                    .as_ref()
+                    .and_then(|u| u.percpu_usage.as_ref().map(|v| v.len() as u32))
+            })
+            .unwrap_or(1)
+            .max(1) as f64;
+        if sys_delta > 0.0 && prev > 0 {
+            out.cpu_pct = (cpu_delta / sys_delta) * ncpu * 100.0;
+        }
+    }
+
+    // Memory: usage minus page cache, against the limit (like `docker stats`).
+    if let Some(mem) = &s.memory_stats {
+        let usage = mem.usage.unwrap_or(0);
+        let cache = mem
+            .stats
+            .as_ref()
+            .and_then(|m| m.get("inactive_file").or_else(|| m.get("cache")).copied())
+            .unwrap_or(0);
+        out.mem_used = usage.saturating_sub(cache);
+        out.mem_limit = mem.limit.unwrap_or(0);
+        if out.mem_limit > 0 {
+            out.mem_pct = out.mem_used as f64 / out.mem_limit as f64 * 100.0;
+        }
+    }
+
+    // Network: sum over all interfaces.
+    if let Some(nets) = &s.networks {
+        for n in nets.values() {
+            out.net_rx += n.rx_bytes.unwrap_or(0);
+            out.net_tx += n.tx_bytes.unwrap_or(0);
+        }
+    }
+
+    // Block IO: sum service-bytes by op.
+    if let Some(blk) = &s.blkio_stats {
+        if let Some(entries) = &blk.io_service_bytes_recursive {
+            for e in entries {
+                let v = e.value.unwrap_or(0);
+                match e.op.as_deref().unwrap_or("").to_lowercase().as_str() {
+                    "read" => out.blk_r += v,
+                    "write" => out.blk_w += v,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    out.pids = s.pids_stats.as_ref().and_then(|p| p.current).unwrap_or(0);
+    out
 }

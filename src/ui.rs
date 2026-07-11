@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Wrap},
     Frame,
 };
 
@@ -24,6 +24,7 @@ pub fn render(f: &mut Frame, app: &App) {
         Mode::Table => render_table(f, app, chunks[1]),
         Mode::Logs => render_logs(f, app, chunks[1]),
         Mode::Inspect => render_inspect(f, app, chunks[1]),
+        Mode::Stats => render_stats(f, app, chunks[1]),
         Mode::Help => {
             render_table(f, app, chunks[1]);
             render_help(f, chunks[1]);
@@ -205,6 +206,80 @@ fn render_inspect(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(p, area);
 }
 
+fn level_color(pct: f64) -> Color {
+    if pct < 50.0 {
+        Color::Green
+    } else if pct < 80.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    }
+}
+
+fn render_stats(f: &mut Frame, app: &App, area: Rect) {
+    let s = app.stats.clone().unwrap_or_default();
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" stats: {} ", app.stats_title))
+        .border_style(Style::default().fg(ACCENT));
+    let inner = outer.inner(area);
+    f.render_widget(outer, area);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // cpu
+        Constraint::Length(1), // mem
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // net/blk/pids
+        Constraint::Min(1),    // hint
+    ])
+    .split(inner);
+
+    let cpu = Gauge::default()
+        .gauge_style(Style::default().fg(level_color(s.cpu_pct)))
+        .ratio((s.cpu_pct / 100.0).clamp(0.0, 1.0))
+        .label(format!("CPU  {:.1}%", s.cpu_pct));
+    f.render_widget(cpu, rows[0]);
+
+    let mem = Gauge::default()
+        .gauge_style(Style::default().fg(level_color(s.mem_pct)))
+        .ratio((s.mem_pct / 100.0).clamp(0.0, 1.0))
+        .label(format!(
+            "MEM  {} / {} ({:.1}%)",
+            crate::docker::human_size(s.mem_used as i64),
+            crate::docker::human_size(s.mem_limit as i64),
+            s.mem_pct
+        ));
+    f.render_widget(mem, rows[1]);
+
+    let info = Line::from(vec![
+        Span::styled("NET ", Style::default().fg(Color::DarkGray)),
+        Span::raw(format!(
+            "↓{} ↑{}",
+            crate::docker::human_size(s.net_rx as i64),
+            crate::docker::human_size(s.net_tx as i64)
+        )),
+        Span::styled("    BLK ", Style::default().fg(Color::DarkGray)),
+        Span::raw(format!(
+            "r{} w{}",
+            crate::docker::human_size(s.blk_r as i64),
+            crate::docker::human_size(s.blk_w as i64)
+        )),
+        Span::styled("    PIDs ", Style::default().fg(Color::DarkGray)),
+        Span::raw(s.pids.to_string()),
+    ]);
+    f.render_widget(Paragraph::new(info), rows[3]);
+
+    let hint = if app.stats.is_none() {
+        "collecting…   Esc/q to exit"
+    } else {
+        "Esc/q to exit"
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray)))),
+        rows[4],
+    );
+}
+
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     let content = if app.commanding {
         Line::from(vec![
@@ -239,6 +314,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  Enter", "Services→tasks · Contexts→switch"),
         help_line("Actions", ""),
         help_line("  l", "stream logs (-f)"),
+        help_line("  a", "live stats (CPU/MEM/NET/BLK)"),
         help_line("  i", "inspect (describe)"),
         help_line("  e", "exec shell into container"),
         help_line("  s / r / S", "stop / restart / start"),
