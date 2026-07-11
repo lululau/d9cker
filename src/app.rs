@@ -86,12 +86,15 @@ pub enum Mode {
     Help,
 }
 
-/// A pending destructive confirmation.
+/// A destructive action awaiting y/n confirmation.
+pub enum PendingAction {
+    Delete { view: View, id: String, label: String },
+    PruneImages,
+}
+
 pub struct Confirm {
-    pub verb: String,
-    pub id: String,
-    pub label: String,
-    pub view: View,
+    pub prompt: String,
+    pub action: PendingAction,
 }
 
 pub struct App {
@@ -571,10 +574,12 @@ impl App {
         };
         let Some(it) = self.selected_item() else { return };
         self.confirm = Some(Confirm {
-            verb: format!("remove {noun}"),
-            id: it.id.clone(),
-            label: it.name.clone(),
-            view: self.view,
+            prompt: format!("remove {noun} '{}'", it.name),
+            action: PendingAction::Delete {
+                view: self.view,
+                id: it.id.clone(),
+                label: it.name.clone(),
+            },
         });
     }
 
@@ -610,7 +615,14 @@ impl App {
         });
     }
 
-    fn prune_images(&mut self) {
+    fn request_prune(&mut self) {
+        self.confirm = Some(Confirm {
+            prompt: "prune all dangling images".into(),
+            action: PendingAction::PruneImages,
+        });
+    }
+
+    fn do_prune_images(&mut self) {
         self.status = "pruning dangling images…".into();
         let tx = self.tx.clone();
         let docker = self.docker.clone();
@@ -673,8 +685,14 @@ impl App {
         if self.confirm.is_some() {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    let c = self.confirm.take().unwrap();
-                    self.run_delete(c.view, c.id, c.label);
+                    if let Some(c) = self.confirm.take() {
+                        match c.action {
+                            PendingAction::Delete { view, id, label } => {
+                                self.run_delete(view, id, label)
+                            }
+                            PendingAction::PruneImages => self.do_prune_images(),
+                        }
+                    }
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => self.confirm = None,
                 _ => {}
@@ -807,7 +825,7 @@ impl App {
             "no" | "node" | "nodes" => self.switch_view(View::Nodes),
             "ctx" | "context" | "contexts" => self.switch_view(View::Contexts),
             "q" | "quit" => self.should_quit = true,
-            "prune" => self.prune_images(),
+            "prune" => self.request_prune(),
             "" => {}
             other => self.status = format!("unknown command ':{other}'"),
         }

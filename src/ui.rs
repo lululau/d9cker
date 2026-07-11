@@ -33,7 +33,7 @@ pub fn render(f: &mut Frame, app: &App) {
     render_footer(f, app, chunks[2]);
 
     if let Some(c) = &app.confirm {
-        render_confirm(f, &c.verb, &c.label, f.area());
+        render_confirm(f, &c.prompt, f.area());
     }
 }
 
@@ -413,11 +413,11 @@ fn help_line(k: &str, v: &str) -> Line<'static> {
     }
 }
 
-fn render_confirm(f: &mut Frame, verb: &str, label: &str, area: Rect) {
-    let popup = centered(area, 50, 5);
+fn render_confirm(f: &mut Frame, prompt: &str, area: Rect) {
+    let popup = centered(area, 56, 5);
     f.render_widget(Clear, popup);
     let text = vec![
-        Line::from(format!("{verb} '{label}' ?")).centered(),
+        Line::from(format!("{prompt}?")).centered(),
         Line::from("").centered(),
         Line::from(vec![
             Span::styled("y", Style::default().fg(Color::Green).bold()),
