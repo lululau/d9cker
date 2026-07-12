@@ -169,8 +169,8 @@ mod tests {
     #[test]
     fn ssh_target_parses() {
         assert_eq!(
-            ssh_target("ssh://yizhi@10.0.0.106"),
-            Some(("yizhi@10.0.0.106".into(), None))
+            ssh_target("ssh://alice@docker.example.com"),
+            Some(("alice@docker.example.com".into(), None))
         );
         assert_eq!(
             ssh_target("ssh://user@host:2222"),
