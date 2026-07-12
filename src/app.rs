@@ -90,6 +90,7 @@ pub enum Msg {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Table,
+    Peek,
     Logs,
     Inspect,
     Stats,
@@ -974,6 +975,14 @@ impl App {
 
         match self.mode {
             Mode::Table => self.table_key(key.code),
+            Mode::Peek => {
+                if matches!(
+                    key.code,
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('p') | KeyCode::Enter
+                ) {
+                    self.mode = Mode::Table;
+                }
+            }
             Mode::Logs => self.logs_key(key.code),
             Mode::Inspect => self.inspect_key(key.code),
             Mode::Stats => self.stats_key(key.code),
@@ -1048,8 +1057,11 @@ impl App {
             KeyCode::Char('s') => self.action("stop"),
             KeyCode::Char('r') => self.action("restart"),
             KeyCode::Char('S') => self.action("start"),
-            KeyCode::Char('p') => self.action("pause"),
-            KeyCode::Char('P') => self.action("unpause"),
+            KeyCode::Char('p') => {
+                if self.selected_item().is_some() {
+                    self.mode = Mode::Peek;
+                }
+            }
             KeyCode::Char('x') => self.delete_selected(),
             KeyCode::Char('+') | KeyCode::Char('=') => self.scale(1),
             KeyCode::Char('-') => self.scale(-1),
@@ -1102,6 +1114,8 @@ impl App {
             "ctx" | "context" | "contexts" => self.switch_view(View::Contexts),
             "q" | "quit" => self.should_quit = true,
             "prune" => self.request_prune(),
+            "pause" => self.action("pause"),
+            "unpause" => self.action("unpause"),
             "" => {}
             other => self.status = format!("unknown command ':{other}'"),
         }

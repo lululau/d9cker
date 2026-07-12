@@ -27,12 +27,17 @@ pub fn render(f: &mut Frame, app: &App) {
     render_tabs(f, app, chunks[1]);
     match app.mode {
         Mode::Table => render_table(f, app, chunks[2]),
+        Mode::Peek => {
+            render_table(f, app, chunks[2]);
+            render_peek(f, app, chunks[2]);
+        }
         Mode::Logs => render_logs(f, app, chunks[2]),
         Mode::Inspect => render_inspect(f, app, chunks[2]),
         Mode::Stats => render_stats(f, app, chunks[2]),
         Mode::Help => {
             // render whatever you were looking at, then the help on top
             match app.prev_mode {
+                Mode::Peek => render_table(f, app, chunks[2]),
                 Mode::Logs => render_logs(f, app, chunks[2]),
                 Mode::Inspect => render_inspect(f, app, chunks[2]),
                 Mode::Stats => render_stats(f, app, chunks[2]),
@@ -498,6 +503,48 @@ fn render_stats(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(info), rows[3]);
 }
 
+/// Peek: the selected row's columns, untruncated — the content the table had
+/// to cut off with an ellipsis.
+fn render_peek(f: &mut Frame, app: &App, area: Rect) {
+    let Some(it) = app.selected_item() else {
+        return;
+    };
+    let cols = app.view.columns();
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, name) in cols.iter().enumerate() {
+        let value = it.cells.get(i).cloned().unwrap_or_default();
+        if name.is_empty() && value.trim().is_empty() {
+            continue;
+        }
+        lines.push(Line::from(Span::styled(
+            (*name).to_string(),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::raw(if value.is_empty() {
+            "—".to_string()
+        } else {
+            value
+        })));
+        lines.push(Line::from(""));
+    }
+
+    let w = 84.min(area.width.saturating_sub(4));
+    let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let popup = centered(area, w, h);
+    f.render_widget(Clear, popup);
+    let p = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(format!(" peek: {} ", it.name))
+                .border_style(Style::default().fg(ACCENT)),
+        )
+        .wrap(Wrap { trim: false });
+    f.render_widget(p, popup);
+}
+
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
     let content = if app.mode == Mode::Logs && app.log_searching {
         Line::from(vec![
@@ -539,13 +586,15 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
 /// Contextual keybinding hint for the footer, per view.
 fn view_hint(view: View) -> &'static str {
     (match view {
-        View::Containers => "Enter logs · i inspect · t stats · a all/running · s/r/S stop/restart/start · e exec · x del",
+        View::Containers => {
+            "Enter logs · p peek · i inspect · t stats · a all/running · s/r/S · e exec · x del"
+        }
         View::Images => "i inspect · x del · :prune",
         View::Services => "Enter tasks · l logs · i inspect · +/- scale",
         View::Nodes => "i inspect",
         View::Volumes => "i inspect · x del · Ctrl-r refresh sizes",
         View::Networks => "i inspect · x del",
-        View::Compose => "Enter containers · i view compose file · e edit compose file",
+        View::Compose => "Enter containers · p peek · i view compose file · e edit compose file",
         View::Contexts => "Enter switch context",
         View::ServiceTasks => "Esc back · l logs · i inspect",
     }) as _
@@ -583,9 +632,10 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  a", "toggle all / running-only (Containers)"),
         help_line("  i", "inspect (describe)"),
         help_line("  e", "exec into container · edit compose file (Compose)"),
+        help_line("  p", "peek — full value of every column (what … hides)"),
         help_line("  i", "inspect · view compose file (Compose)"),
         help_line("  s / r / S", "stop / restart / start"),
-        help_line("  p / P", "pause / unpause"),
+        help_line("  :pause", ":unpause — pause / unpause a container"),
         help_line("  x", "delete resource (container/image/volume/network)"),
         help_line("  + / -", "scale service up / down (Services)"),
         help_line("  A", "attach to container (Ctrl-P Ctrl-Q to detach)"),

@@ -80,14 +80,16 @@ Press `?` at any time — help is global and overlays whatever you're looking at
 | `h` / `l`, `Tab` / `S-Tab` | previous / next tab (`Tab` works from *any* mode) |
 | `1`…`8` | jump straight to a tab |
 | `j` / `k`, `g` / `G` | move selection · top / bottom |
+| `u` / `d` | half-page up / down (PgUp/PgDn = full page) |
 | `←` / `→` | scroll horizontally (reveal truncated values) |
 | `/` | filter rows · `o` / `O` sort column / reverse |
 | `Enter` | Containers → **logs** · Services → tasks · Compose → containers · Contexts → **switch** |
 | `t` | live stats (CPU / MEM / NET / BLK) |
+| `p` | **peek** — every column of the selected row, untruncated |
 | `i` | inspect · view compose file (Compose) |
 | `e` | exec into container · edit compose file (Compose) |
 | `a` | toggle all / running-only containers |
-| `s` / `r` / `S` | stop / restart / start · `p` / `P` pause / unpause |
+| `s` / `r` / `S` | stop / restart / start (`:pause` / `:unpause` too) |
 | `+` / `-` | scale a swarm service |
 | `x` | delete (container / image / volume / network) — asks first |
 | `:` | command mode (`co`, `svc`, `nodes`, `ctx`, `prune`, `q`) |
