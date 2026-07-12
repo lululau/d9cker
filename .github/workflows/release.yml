@@ -48,6 +48,9 @@ jobs:
           build-tool: ${{ matrix.build-tool }}
           archive: $bin-$tag-$target
           tar: unix
+          # PKGBUILD installs these out of the tarball — they are NOT included
+          # by default, and makepkg fails without them.
+          include: LICENSE,README.md
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # Publish d9cker-bin to the AUR, pointing at the linux tarballs the
