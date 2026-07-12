@@ -194,8 +194,10 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
                 style = style.fg(Color::DarkGray);
             }
         }
+        let caps = app.view.col_max();
         let cells = it.cells.iter().enumerate().map(|(ci, v)| {
-            let mut cell = Cell::from(v.clone());
+            let cap = caps.get(ci).copied().unwrap_or(30);
+            let mut cell = Cell::from(fit(v, cap));
             // colorize the STATE-ish column
             if let Some(color) = state_color(app.view, ci, v) {
                 cell = cell.style(Style::default().fg(color));
@@ -250,9 +252,22 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
 
 /// Width each column needs to show its content in full (capped so one giant
 /// cell can't blow the canvas out).
+/// Fit text to a column width, marking truncation with an ellipsis.
+fn fit(text: &str, width: u16) -> String {
+    let w = width as usize;
+    if text.chars().count() <= w {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(w.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
 fn natural_widths(app: &App, vis: &[usize]) -> Vec<u16> {
     let cols = app.view.columns();
-    let mut w: Vec<usize> = cols.iter().map(|c| c.chars().count() + 1).collect();
+    let caps = app.view.col_max();
+    // start at the header width, grow to fit content, never exceed the cap
+    let mut w: Vec<usize> = cols.iter().map(|c| c.chars().count()).collect();
     for &i in vis {
         for (ci, cell) in app.items[i].cells.iter().enumerate() {
             if ci < w.len() {
@@ -260,7 +275,13 @@ fn natural_widths(app: &App, vis: &[usize]) -> Vec<u16> {
             }
         }
     }
-    w.iter().map(|&x| x.clamp(3, 90) as u16).collect()
+    w.iter()
+        .enumerate()
+        .map(|(i, &x)| {
+            let cap = caps.get(i).copied().unwrap_or(30) as usize;
+            x.clamp(1, cap) as u16
+        })
+        .collect()
 }
 
 fn state_color(view: View, col: usize, v: &str) -> Option<Color> {

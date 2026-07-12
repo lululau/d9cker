@@ -67,6 +67,23 @@ impl View {
         }
     }
 
+    /// Sensible maximum width per column. Columns shrink to fit their content
+    /// but never grow past this, so one pathologically long value can't stretch
+    /// the table out of shape.
+    pub fn col_max(self) -> &'static [u16] {
+        match self {
+            View::Containers => &[12, 32, 34, 9, 22, 16, 26],
+            View::Images => &[40, 18, 14, 9, 8],
+            View::Services => &[32, 11, 9, 34, 18],
+            View::Nodes => &[20, 9, 13, 10, 9],
+            View::Contexts => &[2, 12, 26, 44],
+            View::ServiceTasks => &[32, 14, 10, 12, 30, 28],
+            View::Volumes => &[30, 8, 9, 7, 46],
+            View::Networks => &[26, 10, 7, 18, 14],
+            View::Compose => &[24, 12, 11, 52],
+        }
+    }
+
     pub fn inspect_type(self) -> Option<&'static str> {
         match self {
             View::Containers => Some("container"),
