@@ -11,7 +11,7 @@ Set Padding 12
 Set BorderRadius 8
 
 Hide
-Type "export DOCKER_CONFIG=/tmp/d9cker-demo/dockercfg; export PS1='$ '; clear"
+Type "export PS1='$ '; clear"
 Enter
 Show
 
