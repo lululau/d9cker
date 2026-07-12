@@ -35,6 +35,7 @@ pub enum View {
     ServiceTasks,
     Volumes,
     Networks,
+    Compose,
 }
 
 impl View {
@@ -48,6 +49,7 @@ impl View {
             View::ServiceTasks => "Service Tasks",
             View::Volumes => "Volumes",
             View::Networks => "Networks",
+            View::Compose => "Compose",
         }
     }
 
@@ -61,6 +63,7 @@ impl View {
             View::ServiceTasks => &["NAME", "NODE", "DESIRED", "CURRENT", "IMAGE", "ERROR"],
             View::Volumes => &["NAME", "DRIVER", "SIZE", "SCOPE", "MOUNTPOINT"],
             View::Networks => &["NAME", "DRIVER", "SCOPE", "SUBNET", "ID"],
+            View::Compose => &["PROJECT", "STATUS", "CONTAINERS", "CONFIG FILES"],
         }
     }
 
@@ -401,6 +404,45 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                 })
                 .collect()
         }
+        View::Compose => {
+            let opts = ListContainersOptionsBuilder::default().all(true).build();
+            let cs = docker.list_containers(Some(opts)).await?;
+            // group by the compose project label — this is exactly what
+            // `docker compose ls` does client-side (there is no Engine API for it)
+            let mut map: std::collections::BTreeMap<String, (usize, usize, String)> =
+                std::collections::BTreeMap::new();
+            for c in cs {
+                let labels = c.labels.clone().unwrap_or_default();
+                let proj = match labels.get("com.docker.compose.project") {
+                    Some(p) if !p.is_empty() => p.clone(),
+                    _ => continue,
+                };
+                let cfg = labels
+                    .get("com.docker.compose.project.config_files")
+                    .cloned()
+                    .unwrap_or_default();
+                let running = opt_estr(&c.state) == "running";
+                let e = map.entry(proj).or_insert((0, 0, String::new()));
+                e.1 += 1;
+                if running {
+                    e.0 += 1;
+                }
+                if e.2.is_empty() && !cfg.is_empty() {
+                    e.2 = cfg;
+                }
+            }
+            map.into_iter()
+                .map(|(name, (run, total, cfg))| {
+                    let status = if run > 0 {
+                        format!("running({run})")
+                    } else {
+                        format!("exited({total})")
+                    };
+                    let cells = vec![name.clone(), status, format!("{run}/{total}"), cfg];
+                    Item { id: name.clone(), name, cells }
+                })
+                .collect()
+        }
         View::Contexts => contexts::load_contexts()
             .into_iter()
             .map(|c| {
@@ -691,4 +733,23 @@ pub async fn prune_images(docker: &Docker) -> Result<String> {
     let n = resp.images_deleted.map(|v| v.len()).unwrap_or(0);
     let reclaimed = resp.space_reclaimed.unwrap_or(0);
     Ok(format!("pruned {n} image(s), reclaimed {}", human_size(reclaimed)))
+}
+
+/// Number of distinct compose projects on this engine (0 => hide the Compose tab).
+pub async fn compose_count(docker: &Docker) -> usize {
+    let opts = ListContainersOptionsBuilder::default().all(true).build();
+    let Ok(cs) = docker.list_containers(Some(opts)).await else {
+        return 0;
+    };
+    let mut set = std::collections::HashSet::new();
+    for c in cs {
+        if let Some(l) = c.labels {
+            if let Some(p) = l.get("com.docker.compose.project") {
+                if !p.is_empty() {
+                    set.insert(p.clone());
+                }
+            }
+        }
+    }
+    set.len()
 }

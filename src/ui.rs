@@ -278,6 +278,12 @@ fn column_widths(view: View) -> Vec<Constraint> {
             Constraint::Length(8),
             Constraint::Percentage(42),
         ],
+        View::Compose => vec![
+            Constraint::Percentage(22),
+            Constraint::Length(12),
+            Constraint::Length(11),
+            Constraint::Percentage(55),
+        ],
         View::Networks => vec![
             Constraint::Percentage(28),
             Constraint::Length(12),
@@ -452,6 +458,7 @@ fn view_hint(view: View) -> &'static str {
         View::Nodes => "i inspect",
         View::Volumes => "i inspect · x del · u sizes",
         View::Networks => "i inspect · x del",
+        View::Compose => "Enter show project containers · config file shown in CONFIG FILES",
         View::Contexts => "Enter switch context",
         View::ServiceTasks => "Esc back · l logs · i inspect",
     };

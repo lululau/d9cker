@@ -13,8 +13,9 @@ use tokio::task::AbortHandle;
 const LOG_CAP: usize = 5000;
 
 /// The tab order for h/l navigation and the header tab bar.
-pub const TABS: [View; 7] = [
+pub const TABS: [View; 8] = [
     View::Containers,
+    View::Compose,
     View::Services,
     View::Nodes,
     View::Images,
@@ -67,7 +68,7 @@ fn cmp_cells(a: &str, b: &str) -> Ordering {
 #[derive(Debug)]
 pub enum Msg {
     Data { view: View, arg: String, items: Vec<Item> },
-    Meta { swarm: String },
+    Meta { swarm: String, compose: usize },
     LogLine(String),
     LogEnded,
     Stats(StatsSample),
@@ -104,6 +105,7 @@ pub struct App {
 
     pub context: String,
     pub swarm: String,
+    pub compose_projects: usize,
 
     pub view: View,
     pub items: Vec<Item>,
@@ -161,6 +163,7 @@ impl App {
             should_quit: false,
             context,
             swarm: String::new(),
+            compose_projects: 0,
             view: View::Containers,
             items: Vec::new(),
             selected: 0,
@@ -229,7 +232,8 @@ impl App {
         let docker = self.docker.clone();
         tokio::spawn(async move {
             let swarm = docker::swarm_state(&docker).await;
-            let _ = tx.send(Msg::Meta { swarm });
+            let compose = docker::compose_count(&docker).await;
+            let _ = tx.send(Msg::Meta { swarm, compose });
         });
     }
 
@@ -284,8 +288,12 @@ impl App {
                     self.status.clear();
                 }
             }
-            Msg::Meta { swarm } => {
+            Msg::Meta { swarm, compose } => {
                 self.swarm = swarm;
+                self.compose_projects = compose;
+                if self.compose_projects == 0 && self.view == View::Compose {
+                    self.switch_view(View::Containers);
+                }
                 // context has no swarm: don't strand the user on a swarm-only view
                 if self.swarm != "active"
                     && matches!(self.view, View::Services | View::Nodes | View::ServiceTasks)
@@ -416,6 +424,22 @@ impl App {
             self.status = format!("tasks of {}", self.drill_service);
             self.refresh();
         }
+    }
+
+    /// Jump from a compose project to the containers that belong to it.
+    fn open_compose_project(&mut self) {
+        let Some(it) = self.selected_item() else { return };
+        let proj = it.name.clone();
+        self.view = View::Containers;
+        self.selected = 0;
+        self.items.clear();
+        self.sort_col = None;
+        self.sort_desc = false;
+        self.filtering = false;
+        self.filter = proj.clone();
+        self.show_all = true; // a project's stopped containers matter too
+        self.refresh();
+        self.status = format!("compose project: {proj}");
     }
 
     fn switch_context(&mut self) {
@@ -680,9 +704,14 @@ impl App {
     /// flicker while `docker info` is still in flight.)
     pub fn tabs(&self) -> Vec<View> {
         let swarm = self.swarm.is_empty() || self.swarm == "active";
+        let compose = self.compose_projects > 0;
         TABS.iter()
             .copied()
-            .filter(|v| swarm || !matches!(v, View::Services | View::Nodes))
+            .filter(|v| match v {
+                View::Services | View::Nodes => swarm,
+                View::Compose => compose,
+                _ => true,
+            })
             .collect()
     }
 
@@ -820,7 +849,7 @@ impl App {
                 self.selected = self.visible_indices().len().saturating_sub(1)
             }
             // digit keys follow the tab-bar order (TABS) so they always match
-            KeyCode::Char(c @ '1'..='7') => {
+            KeyCode::Char(c @ '1'..='8') => {
                 let tabs = self.tabs();
                 if let Some(&v) = tabs.get(c as usize - '1' as usize) {
                     self.switch_view(v);
@@ -835,6 +864,7 @@ impl App {
                 self.filter.clear();
             }
             KeyCode::Enter => match self.view {
+                View::Compose => self.open_compose_project(),
                 View::Contexts => self.switch_context(),
                 View::Services => self.drill_into_service(),
                 View::Containers | View::ServiceTasks => self.start_logs(),
