@@ -9,12 +9,11 @@ use crate::contexts;
 use anyhow::{anyhow, Result};
 use bollard::query_parameters::{
     DataUsageOptions, InspectContainerOptions, InspectNetworkOptions, InspectServiceOptions,
-    ListContainersOptionsBuilder, ListImagesOptionsBuilder, ListNetworksOptions,
-    ListNodesOptions, ListServicesOptions, ListTasksOptionsBuilder, ListVolumesOptions,
-    LogsOptionsBuilder, PruneImagesOptions, RemoveContainerOptionsBuilder,
-    RemoveImageOptionsBuilder, RemoveVolumeOptionsBuilder, RestartContainerOptions,
-    StartContainerOptions, StatsOptionsBuilder, StopContainerOptions,
-    UpdateServiceOptionsBuilder,
+    ListContainersOptionsBuilder, ListImagesOptionsBuilder, ListNetworksOptions, ListNodesOptions,
+    ListServicesOptions, ListTasksOptionsBuilder, ListVolumesOptions, LogsOptionsBuilder,
+    PruneImagesOptions, RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder,
+    RemoveVolumeOptionsBuilder, RestartContainerOptions, StartContainerOptions,
+    StatsOptionsBuilder, StopContainerOptions, UpdateServiceOptionsBuilder,
 };
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures::stream::{BoxStream, StreamExt};
@@ -128,7 +127,10 @@ fn short(id: &str) -> String {
 
 /// Strip a trailing `@sha256:…` digest from an image ref for display.
 fn clean_image(img: &str) -> String {
-    img.split_once("@sha256:").map(|(h, _)| h).unwrap_or(img).to_string()
+    img.split_once("@sha256:")
+        .map(|(h, _)| h)
+        .unwrap_or(img)
+        .to_string()
 }
 
 pub fn human_size(bytes: i64) -> String {
@@ -249,7 +251,11 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         human_size(im.size),
                         fmt_age(im.created),
                     ];
-                    Item { id, name: format!("{repo}:{tag}"), cells }
+                    Item {
+                        id,
+                        name: format!("{repo}:{tag}"),
+                        cells,
+                    }
                 })
                 .collect()
         }
@@ -306,9 +312,7 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                 .map(|n| {
                     let id = n.id.clone().unwrap_or_default();
                     let desc = n.description.as_ref();
-                    let host = desc
-                        .and_then(|d| d.hostname.clone())
-                        .unwrap_or_default();
+                    let host = desc.and_then(|d| d.hostname.clone()).unwrap_or_default();
                     let status = n
                         .status
                         .as_ref()
@@ -329,7 +333,11 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         .and_then(|e| e.engine_version.clone())
                         .unwrap_or_default();
                     let cells = vec![host.clone(), status, avail, manager, engine];
-                    Item { id, name: host, cells }
+                    Item {
+                        id,
+                        name: host,
+                        cells,
+                    }
                 })
                 .collect()
         }
@@ -345,13 +353,13 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                     let id = t.id.clone().unwrap_or_default();
                     let slot = t.slot.map(|n| n.to_string()).unwrap_or_default();
                     // bollard usually leaves Task.name empty; reconstruct service.slot
-                    let name = t
-                        .name
-                        .clone()
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| {
-                            if slot.is_empty() { short(&id) } else { format!("{arg}.{slot}") }
-                        });
+                    let name = t.name.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| {
+                        if slot.is_empty() {
+                            short(&id)
+                        } else {
+                            format!("{arg}.{slot}")
+                        }
+                    });
                     let node_id = t.node_id.clone().unwrap_or_default();
                     let node = nodes
                         .get(&node_id)
@@ -389,7 +397,11 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         opt_estr(&v.scope),
                         v.mountpoint.clone(),
                     ];
-                    Item { id: v.name.clone(), name: v.name, cells }
+                    Item {
+                        id: v.name.clone(),
+                        name: v.name,
+                        cells,
+                    }
                 })
                 .collect()
         }
@@ -456,7 +468,11 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         format!("exited({total})")
                     };
                     let cells = vec![name.clone(), status, format!("{run}/{total}"), cfg];
-                    Item { id: name.clone(), name, cells }
+                    Item {
+                        id: name.clone(),
+                        name,
+                        cells,
+                    }
                 })
                 .collect()
         }
@@ -465,12 +481,20 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
             .map(|c| {
                 let current = c.name == arg;
                 let cells = vec![
-                    if current { "●".to_string() } else { " ".to_string() },
+                    if current {
+                        "●".to_string()
+                    } else {
+                        " ".to_string()
+                    },
                     c.name.clone(),
                     c.description,
                     c.host,
                 ];
-                Item { id: c.name.clone(), name: c.name, cells }
+                Item {
+                    id: c.name.clone(),
+                    name: c.name,
+                    cells,
+                }
             })
             .collect(),
     };
@@ -478,7 +502,9 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
 }
 
 fn fmt_ports(ports: &Option<Vec<bollard::models::PortSummary>>) -> String {
-    let Some(ports) = ports else { return String::new() };
+    let Some(ports) = ports else {
+        return String::new();
+    };
     let mut seen = Vec::new();
     for p in ports {
         let proto = opt_estr(&p.typ);
@@ -523,9 +549,7 @@ async fn node_hostnames(docker: &Docker) -> HashMap<String, String> {
     let mut m = HashMap::new();
     if let Ok(nodes) = docker.list_nodes(None::<ListNodesOptions>).await {
         for n in nodes {
-            if let (Some(id), Some(host)) =
-                (n.id, n.description.and_then(|d| d.hostname))
-            {
+            if let (Some(id), Some(host)) = (n.id, n.description.and_then(|d| d.hostname)) {
                 m.insert(id, host);
             }
         }
@@ -549,16 +573,24 @@ pub async fn swarm_state(docker: &Docker) -> String {
 
 pub async fn inspect(docker: &Docker, kind: &str, id: &str) -> Result<String> {
     let json = match kind {
-        "container" => {
-            serde_json::to_string_pretty(&docker.inspect_container(id, None::<InspectContainerOptions>).await?)?
-        }
+        "container" => serde_json::to_string_pretty(
+            &docker
+                .inspect_container(id, None::<InspectContainerOptions>)
+                .await?,
+        )?,
         "image" => serde_json::to_string_pretty(&docker.inspect_image(id).await?)?,
-        "service" => serde_json::to_string_pretty(&docker.inspect_service(id, None::<InspectServiceOptions>).await?)?,
+        "service" => serde_json::to_string_pretty(
+            &docker
+                .inspect_service(id, None::<InspectServiceOptions>)
+                .await?,
+        )?,
         "node" => serde_json::to_string_pretty(&docker.inspect_node(id).await?)?,
         "volume" => serde_json::to_string_pretty(&docker.inspect_volume(id).await?)?,
-        "network" => {
-            serde_json::to_string_pretty(&docker.inspect_network(id, None::<InspectNetworkOptions>).await?)?
-        }
+        "network" => serde_json::to_string_pretty(
+            &docker
+                .inspect_network(id, None::<InspectNetworkOptions>)
+                .await?,
+        )?,
         other => return Err(anyhow!("cannot inspect '{other}'")),
     };
     Ok(json)
@@ -568,9 +600,21 @@ pub async fn inspect(docker: &Docker, kind: &str, id: &str) -> Result<String> {
 
 pub async fn container_action(docker: &Docker, verb: &str, id: &str) -> Result<()> {
     match verb {
-        "start" => docker.start_container(id, None::<StartContainerOptions>).await?,
-        "stop" => docker.stop_container(id, None::<StopContainerOptions>).await?,
-        "restart" => docker.restart_container(id, None::<RestartContainerOptions>).await?,
+        "start" => {
+            docker
+                .start_container(id, None::<StartContainerOptions>)
+                .await?
+        }
+        "stop" => {
+            docker
+                .stop_container(id, None::<StopContainerOptions>)
+                .await?
+        }
+        "restart" => {
+            docker
+                .restart_container(id, None::<RestartContainerOptions>)
+                .await?
+        }
         "pause" => docker.pause_container(id).await?,
         "unpause" => docker.unpause_container(id).await?,
         "rm" => {
@@ -639,8 +683,16 @@ fn compute_stats(s: &bollard::models::ContainerStatsResponse) -> StatsSample {
     // CPU%: delta of container cpu usage over delta of system cpu usage, x nCPU.
     // precpu_stats is the previous sample (populated from the 2nd message on).
     if let (Some(cpu), Some(pre)) = (&s.cpu_stats, &s.precpu_stats) {
-        let cur = cpu.cpu_usage.as_ref().and_then(|u| u.total_usage).unwrap_or(0);
-        let prev = pre.cpu_usage.as_ref().and_then(|u| u.total_usage).unwrap_or(0);
+        let cur = cpu
+            .cpu_usage
+            .as_ref()
+            .and_then(|u| u.total_usage)
+            .unwrap_or(0);
+        let prev = pre
+            .cpu_usage
+            .as_ref()
+            .and_then(|u| u.total_usage)
+            .unwrap_or(0);
         let cur_sys = cpu.system_cpu_usage.unwrap_or(0);
         let pre_sys = pre.system_cpu_usage.unwrap_or(0);
         let cpu_delta = cur.saturating_sub(prev) as f64;
@@ -725,7 +777,9 @@ pub async fn delete(docker: &Docker, view: View, id: &str) -> Result<()> {
 
 /// Scale a replicated swarm service by `delta` replicas.
 pub async fn scale_service(docker: &Docker, name: &str, delta: i64) -> Result<String> {
-    let svc = docker.inspect_service(name, None::<InspectServiceOptions>).await?;
+    let svc = docker
+        .inspect_service(name, None::<InspectServiceOptions>)
+        .await?;
     let version = svc
         .version
         .and_then(|v| v.index)
@@ -739,7 +793,9 @@ pub async fn scale_service(docker: &Docker, name: &str, delta: i64) -> Result<St
     let cur = repl.replicas.unwrap_or(0);
     let next = (cur + delta).max(0);
     repl.replicas = Some(next);
-    let opts = UpdateServiceOptionsBuilder::default().version(version).build();
+    let opts = UpdateServiceOptionsBuilder::default()
+        .version(version)
+        .build();
     docker.update_service(name, spec, opts, None).await?;
     Ok(format!("scaled {name}: {cur} -> {next}"))
 }
@@ -749,7 +805,10 @@ pub async fn prune_images(docker: &Docker) -> Result<String> {
     let resp = docker.prune_images(None::<PruneImagesOptions>).await?;
     let n = resp.images_deleted.map(|v| v.len()).unwrap_or(0);
     let reclaimed = resp.space_reclaimed.unwrap_or(0);
-    Ok(format!("pruned {n} image(s), reclaimed {}", human_size(reclaimed)))
+    Ok(format!(
+        "pruned {n} image(s), reclaimed {}",
+        human_size(reclaimed)
+    ))
 }
 
 /// Number of distinct compose projects on this engine (0 => hide the Compose tab).

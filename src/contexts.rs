@@ -60,8 +60,8 @@ fn docker_dir() -> PathBuf {
 
 /// The built-in "default" context (not stored on disk).
 fn default_context() -> DockerContext {
-    let host = std::env::var("DOCKER_HOST")
-        .unwrap_or_else(|_| "unix:///var/run/docker.sock".to_string());
+    let host =
+        std::env::var("DOCKER_HOST").unwrap_or_else(|_| "unix:///var/run/docker.sock".to_string());
     DockerContext {
         name: "default".into(),
         description: "Current DOCKER_HOST based configuration".into(),
@@ -152,9 +152,9 @@ pub async fn read_file(host: &str, path: &str) -> Result<String> {
         c.arg(target).arg("cat").arg("--").arg(path);
         let out = c.output().await?;
         if !out.status.success() {
-            return Err(anyhow::anyhow!(
-                String::from_utf8_lossy(&out.stderr).trim().to_string()
-            ));
+            return Err(anyhow::anyhow!(String::from_utf8_lossy(&out.stderr)
+                .trim()
+                .to_string()));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {

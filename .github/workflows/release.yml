@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # d9cker is unix-only (unix sockets, ssh transport, dup2 on stderr),
+  # so no Windows target here.
+  binaries:
+    needs: create-release
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            build-tool: cargo-zigbuild
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            build-tool: cargo-zigbuild
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            build-tool: cargo
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            build-tool: cargo
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: d9cker
+          target: ${{ matrix.target }}
+          build-tool: ${{ matrix.build-tool }}
+          archive: $bin-$tag-$target
+          tar: unix
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Publish d9cker-bin to the AUR, pointing at the linux tarballs the
+  # `binaries` job just attached to the GitHub release.
+  aur:
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render PKGBUILD with release checksums
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"          # v0.1.0
+          VERSION="${TAG#v}"                # 0.1.0
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+
+          for arch in x86_64 aarch64; do
+            url="${BASE}/d9cker-${TAG}-${arch}-unknown-linux-gnu.tar.gz"
+            echo "fetching ${url}"
+            curl -fsSL --retry 5 --retry-delay 5 -o "${arch}.tar.gz" "${url}"
+          done
+
+          SHA_X86_64=$(sha256sum x86_64.tar.gz | cut -d' ' -f1)
+          SHA_AARCH64=$(sha256sum aarch64.tar.gz | cut -d' ' -f1)
+
+          sed -e "s/@VERSION@/${VERSION}/g" \
+              -e "s/@SHA256_X86_64@/${SHA_X86_64}/" \
+              -e "s/@SHA256_AARCH64@/${SHA_AARCH64}/" \
+              packaging/aur/PKGBUILD.template > PKGBUILD
+
+          echo "--- PKGBUILD ---"
+          cat PKGBUILD
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3
+        with:
+          pkgname: d9cker-bin
+          pkgbuild: ./PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ github.ref_name }}"
+          updpkgsums: false

@@ -57,7 +57,11 @@ fn redirect_stderr_to_log() -> Option<std::path::PathBuf> {
     use std::os::unix::io::AsRawFd;
     let dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
     let path = std::path::Path::new(&dir).join("d9cker.log");
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
     // SAFETY: dup2 onto STDERR_FILENO; file fd is valid for the call.
     unsafe {
         libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
@@ -188,11 +192,7 @@ async fn exec_shell(terminal: &mut ratatui::DefaultTerminal, app: &App, id: &str
 /// Suspend the TUI and open a file from the engine host in an editor.
 /// For ssh contexts the file lives on the remote box, so we edit it in place
 /// over ssh using the *remote* $EDITOR; local contexts just use the local one.
-async fn edit_file(
-    terminal: &mut ratatui::DefaultTerminal,
-    host: &str,
-    path: &str,
-) -> Result<()> {
+async fn edit_file(terminal: &mut ratatui::DefaultTerminal, host: &str, path: &str) -> Result<()> {
     ratatui::restore();
 
     if let Some((target, port)) = contexts::ssh_target(host) {
@@ -207,7 +207,10 @@ async fn edit_file(
         let _ = cmd.status().await;
     } else {
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-        let _ = tokio::process::Command::new(editor).arg(path).status().await;
+        let _ = tokio::process::Command::new(editor)
+            .arg(path)
+            .status()
+            .await;
     }
 
     *terminal = ratatui::init();

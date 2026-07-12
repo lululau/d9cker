@@ -1,0 +1,28 @@
+# Maintainer: lee <charlselee58@gmail.com>
+#
+# Rendered by .github/workflows/release.yml — @VERSION@ / @SHA256_*@ are
+# substituted with the tag and the checksums of the published release tarballs.
+
+pkgname=d9cker-bin
+_pkgname=d9cker
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="A k9s-style terminal UI for Docker & Docker Swarm"
+arch=('x86_64' 'aarch64')
+url="https://github.com/loyalpartner/d9cker"
+license=('MIT')
+depends=('gcc-libs' 'openssh')
+optdepends=('docker: manage a local engine')
+provides=("${_pkgname}")
+conflicts=("${_pkgname}")
+
+source_x86_64=("${_pkgname}-${pkgver}-x86_64.tar.gz::${url}/releases/download/v${pkgver}/${_pkgname}-v${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("${_pkgname}-${pkgver}-aarch64.tar.gz::${url}/releases/download/v${pkgver}/${_pkgname}-v${pkgver}-aarch64-unknown-linux-gnu.tar.gz")
+sha256sums_x86_64=('@SHA256_X86_64@')
+sha256sums_aarch64=('@SHA256_AARCH64@')
+
+package() {
+    install -Dm755 "${srcdir}/${_pkgname}" "${pkgdir}/usr/bin/${_pkgname}"
+    install -Dm644 "${srcdir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    install -Dm644 "${srcdir}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+}

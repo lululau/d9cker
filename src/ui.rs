@@ -6,7 +6,9 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Widget, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Widget, Wrap,
+    },
     Frame,
 };
 
@@ -55,13 +57,23 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let cols = Layout::horizontal([Constraint::Min(1), Constraint::Length(8)]).split(area);
 
     let mut left = vec![
-        Span::styled(" d9cker ", Style::default().fg(Color::Black).bg(ACCENT).bold()),
+        Span::styled(
+            " d9cker ",
+            Style::default().fg(Color::Black).bg(ACCENT).bold(),
+        ),
         Span::raw("  "),
         Span::styled(app.context.clone(), Style::default().fg(ACCENT).bold()),
         Span::raw("  "),
         Span::styled("●", Style::default().fg(swarm_color).bold()),
         Span::styled(
-            format!(" swarm {}", if app.swarm.is_empty() { "…" } else { &app.swarm }),
+            format!(
+                " swarm {}",
+                if app.swarm.is_empty() {
+                    "…"
+                } else {
+                    &app.swarm
+                }
+            ),
             Style::default().fg(swarm_color),
         ),
     ];
@@ -96,8 +108,11 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
     }
     f.render_widget(Paragraph::new(Line::from(left)), cols[0]);
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled("? help", Style::default().fg(Color::DarkGray))))
-            .alignment(Alignment::Right),
+        Paragraph::new(Line::from(Span::styled(
+            "? help",
+            Style::default().fg(Color::DarkGray),
+        )))
+        .alignment(Alignment::Right),
         cols[1],
     );
 }
@@ -172,7 +187,9 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
             (*c).to_string()
         };
         let style = if app.sort_col == Some(i) {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
         };
@@ -184,15 +201,18 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         let it = &app.items[item_i];
         let selected = row_i == app.selected;
         let mut style = if selected {
-            Style::default().bg(Color::Rgb(40, 44, 52)).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(Color::Rgb(40, 44, 52))
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
         // dim non-running containers: keeps the running ones visually dominant
-        if !selected && app.view == View::Containers {
-            if it.cells.get(3).map(|s| s != "running").unwrap_or(false) {
-                style = style.fg(Color::DarkGray);
-            }
+        if !selected
+            && app.view == View::Containers
+            && it.cells.get(3).map(|s| s != "running").unwrap_or(false)
+        {
+            style = style.fg(Color::DarkGray);
         }
         let caps = app.view.col_max();
         let cells = it.cells.iter().enumerate().map(|(ci, v)| {
@@ -338,8 +358,13 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
         " logs: {}  [{}{}]  {}-{}/{}{} ",
         app.log_title, follow, wrap, start, end, total, filt
     );
-    let mut p = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(title).border_style(Style::default().fg(ACCENT)));
+    let mut p = Paragraph::new(text).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(title)
+            .border_style(Style::default().fg(ACCENT)),
+    );
     if app.log_wrap {
         p = p.wrap(Wrap { trim: false });
     }
@@ -356,8 +381,13 @@ fn render_inspect(f: &mut Frame, app: &App, area: Rect) {
         .map(|l| Line::from(l.chars().skip(app.hscroll).collect::<String>()))
         .collect();
     let title = format!(" inspect: {} ", app.inspect_title);
-    let p = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(title).border_style(Style::default().fg(ACCENT)));
+    let p = Paragraph::new(text).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(title)
+            .border_style(Style::default().fg(ACCENT)),
+    );
     f.render_widget(p, area);
 }
 
@@ -401,7 +431,10 @@ fn render_stats(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(26),
         ])
         .split(area);
-        f.render_widget(Paragraph::new(Line::from(Span::styled(name.to_string(), dim))), cols[0]);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(name.to_string(), dim))),
+            cols[0],
+        );
         f.render_widget(
             Gauge::default()
                 .gauge_style(Style::default().fg(level_color(pct)).bg(track))
@@ -412,7 +445,9 @@ fn render_stats(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 value,
-                Style::default().fg(level_color(pct)).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(level_color(pct))
+                    .add_modifier(Modifier::BOLD),
             )))
             .alignment(Alignment::Right),
             cols[2],
@@ -448,7 +483,11 @@ fn render_stats(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("    PIDs ", dim),
         Span::raw(s.pids.to_string()),
         Span::styled(
-            if app.stats.is_none() { "     collecting…" } else { "" },
+            if app.stats.is_none() {
+                "     collecting…"
+            } else {
+                ""
+            },
             dim,
         ),
     ]);
@@ -472,20 +511,30 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("/", Style::default().fg(Color::Yellow).bold()),
             Span::raw(app.filter.clone()),
-            Span::styled(if app.filtering { "▏" } else { "" }, Style::default().fg(Color::Yellow)),
+            Span::styled(
+                if app.filtering { "▏" } else { "" },
+                Style::default().fg(Color::Yellow),
+            ),
         ])
     } else if !app.status.is_empty() {
-        let color = if app.status.starts_with('⚠') { Color::Red } else { Color::Gray };
+        let color = if app.status.starts_with('⚠') {
+            Color::Red
+        } else {
+            Color::Gray
+        };
         Line::from(Span::styled(app.status.clone(), Style::default().fg(color)))
     } else {
-        Line::from(Span::styled(view_hint(app.view), Style::default().fg(Color::DarkGray)))
+        Line::from(Span::styled(
+            view_hint(app.view),
+            Style::default().fg(Color::DarkGray),
+        ))
     };
     f.render_widget(Paragraph::new(content), area);
 }
 
 /// Contextual keybinding hint for the footer, per view.
 fn view_hint(view: View) -> &'static str {
-    let keys = match view {
+    (match view {
         View::Containers => "Enter logs · i inspect · t stats · a all/running · s/r/S stop/restart/start · e exec · x del",
         View::Images => "i inspect · x del · :prune",
         View::Services => "Enter tasks · l logs · i inspect · +/- scale",
@@ -495,8 +544,7 @@ fn view_hint(view: View) -> &'static str {
         View::Compose => "Enter containers · i view compose file · e edit compose file",
         View::Contexts => "Enter switch context",
         View::ServiceTasks => "Esc back · l logs · i inspect",
-    };
-    keys
+    }) as _
 }
 
 fn render_help(f: &mut Frame, area: Rect) {
@@ -510,12 +558,21 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  g / G", "top / bottom"),
         help_line("  ← / →", "scroll horizontally (see truncated content)"),
         help_line("  h / l", "previous / next tab"),
-        help_line("  Tab / S-Tab", "next / prev tab — works from anywhere (exits / search)"),
-        help_line("  1..7", "jump to Containers…Contexts (6 Volumes, 7 Networks)"),
+        help_line(
+            "  Tab / S-Tab",
+            "next / prev tab — works from anywhere (exits / search)",
+        ),
+        help_line(
+            "  1..7",
+            "jump to Containers…Contexts (6 Volumes, 7 Networks)",
+        ),
         help_line("  : cmd", "co, im, svc, nodes, ctx, q  (jump to view)"),
         help_line("  /", "filter rows   (Esc clears)"),
         help_line("  o / O", "cycle sort column / reverse direction"),
-        help_line("  Enter", "Containers→logs · Services→tasks · Contexts→switch"),
+        help_line(
+            "  Enter",
+            "Containers→logs · Services→tasks · Contexts→switch",
+        ),
         help_line("Actions", ""),
         help_line("  t", "live stats — top (CPU/MEM/NET/BLK)"),
         help_line("  a", "toggle all / running-only (Containers)"),
@@ -538,14 +595,23 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  q / Ctrl-c", "quit"),
     ];
     let p = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Help ").border_style(Style::default().fg(ACCENT)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Help ")
+                .border_style(Style::default().fg(ACCENT)),
+        )
         .wrap(Wrap { trim: false });
     f.render_widget(p, popup);
 }
 
 fn help_line(k: &str, v: &str) -> Line<'static> {
     if v.is_empty() {
-        Line::from(Span::styled(k.to_string(), Style::default().fg(Color::Magenta).bold()))
+        Line::from(Span::styled(
+            k.to_string(),
+            Style::default().fg(Color::Magenta).bold(),
+        ))
     } else {
         Line::from(vec![
             Span::styled(format!("{k:<18}"), Style::default().fg(ACCENT)),
@@ -568,8 +634,13 @@ fn render_confirm(f: &mut Frame, prompt: &str, area: Rect) {
         ])
         .centered(),
     ];
-    let p = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Confirm ").border_style(Style::default().fg(Color::Red)));
+    let p = Paragraph::new(text).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" Confirm ")
+            .border_style(Style::default().fg(Color::Red)),
+    );
     f.render_widget(p, popup);
 }
 
@@ -578,5 +649,10 @@ fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let h = h.min(area.height);
     let x = area.x + (area.width - w) / 2;
     let y = area.y + (area.height - h) / 2;
-    Rect { x, y, width: w, height: h }
+    Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
 }

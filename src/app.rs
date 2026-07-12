@@ -3,10 +3,10 @@
 use crate::contexts;
 use crate::docker::{self, Item, StatsSample, View};
 use bollard::Docker;
-use std::cmp::Ordering;
-use std::collections::HashMap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt;
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::AbortHandle;
 
@@ -69,8 +69,15 @@ fn cmp_cells(a: &str, b: &str) -> Ordering {
 /// Messages flowing from background tasks back into the UI loop.
 #[derive(Debug)]
 pub enum Msg {
-    Data { view: View, arg: String, items: Vec<Item> },
-    Meta { swarm: String, compose: usize },
+    Data {
+        view: View,
+        arg: String,
+        items: Vec<Item>,
+    },
+    Meta {
+        swarm: String,
+        compose: usize,
+    },
     LogLine(String),
     LogEnded,
     Stats(StatsSample),
@@ -91,7 +98,11 @@ pub enum Mode {
 
 /// A destructive action awaiting y/n confirmation.
 pub enum PendingAction {
-    Delete { view: View, id: String, label: String },
+    Delete {
+        view: View,
+        id: String,
+        label: String,
+    },
     PruneImages,
 }
 
@@ -369,10 +380,22 @@ impl App {
         };
         if let Some(col) = self.sort_col {
             idx.sort_by(|&i, &j| {
-                let a = self.items[i].cells.get(col).map(String::as_str).unwrap_or("");
-                let b = self.items[j].cells.get(col).map(String::as_str).unwrap_or("");
+                let a = self.items[i]
+                    .cells
+                    .get(col)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let b = self.items[j]
+                    .cells
+                    .get(col)
+                    .map(String::as_str)
+                    .unwrap_or("");
                 let ord = cmp_cells(a, b);
-                if self.sort_desc { ord.reverse() } else { ord }
+                if self.sort_desc {
+                    ord.reverse()
+                } else {
+                    ord
+                }
             });
         }
         idx
@@ -388,7 +411,9 @@ impl App {
     }
 
     pub fn selected_item(&self) -> Option<&Item> {
-        self.visible_indices().get(self.selected).and_then(|&i| self.items.get(i))
+        self.visible_indices()
+            .get(self.selected)
+            .and_then(|&i| self.items.get(i))
     }
 
     fn move_sel(&mut self, delta: isize) {
@@ -435,7 +460,9 @@ impl App {
 
     /// Jump from a compose project to the containers that belong to it.
     fn open_compose_project(&mut self) {
-        let Some(it) = self.selected_item() else { return };
+        let Some(it) = self.selected_item() else {
+            return;
+        };
         let proj = it.name.clone();
         self.view = View::Containers;
         self.selected = 0;
@@ -450,7 +477,9 @@ impl App {
     }
 
     fn switch_context(&mut self) {
-        let Some(it) = self.selected_item() else { return };
+        let Some(it) = self.selected_item() else {
+            return;
+        };
         let name = it.name.clone();
         match contexts::resolve_host(&name).and_then(|h| docker::connect(&h)) {
             Ok(d) => {
@@ -469,11 +498,16 @@ impl App {
     // ---- logs ----------------------------------------------------------
 
     fn start_logs(&mut self) {
-        if !matches!(self.view, View::Containers | View::Services | View::ServiceTasks) {
+        if !matches!(
+            self.view,
+            View::Containers | View::Services | View::ServiceTasks
+        ) {
             self.status = "logs: select a container or service".into();
             return;
         }
-        let Some(it) = self.selected_item() else { return };
+        let Some(it) = self.selected_item() else {
+            return;
+        };
         let id = it.id.clone();
         let title = it.name.clone();
         let mut stream = docker::log_stream(&self.docker, self.view, &id, 500);
@@ -516,9 +550,19 @@ impl App {
         let name: String = self
             .log_title
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
-        let base = if name.is_empty() { "logs".to_string() } else { name };
+        let base = if name.is_empty() {
+            "logs".to_string()
+        } else {
+            name
+        };
         let path = format!("d9cker-{base}.log");
         match std::fs::write(&path, self.logs.join("\n")) {
             Ok(()) => self.status = format!("saved {} lines -> {}", self.logs.len(), path),
@@ -539,7 +583,9 @@ impl App {
             self.status = "stats: only for containers".into();
             return;
         }
-        let Some(it) = self.selected_item() else { return };
+        let Some(it) = self.selected_item() else {
+            return;
+        };
         let id = it.id.clone();
         let title = it.name.clone();
         let mut stream = docker::stats_stream(&self.docker, &id);
@@ -643,7 +689,9 @@ impl App {
             self.status = format!("{verb}: only in Containers view");
             return;
         }
-        let Some(it) = self.selected_item() else { return };
+        let Some(it) = self.selected_item() else {
+            return;
+        };
         let id = it.id.clone();
         let label = it.name.clone();
         self.run_action(verb.to_string(), id, label);
@@ -675,7 +723,9 @@ impl App {
                 return;
             }
         };
-        let Some(it) = self.selected_item() else { return };
+        let Some(it) = self.selected_item() else {
+            return;
+        };
         self.confirm = Some(Confirm {
             prompt: format!("remove {noun} '{}'", it.name),
             action: PendingAction::Delete {
@@ -704,7 +754,9 @@ impl App {
             self.status = "scale: only for services".into();
             return;
         }
-        let Some(it) = self.selected_item() else { return };
+        let Some(it) = self.selected_item() else {
+            return;
+        };
         let name = it.name.clone();
         self.status = format!("scaling {name}…");
         let tx = self.tx.clone();
@@ -1154,7 +1206,6 @@ impl App {
 mod tests {
     use super::{cmp_cells, parse_size};
     use std::cmp::Ordering;
-use std::collections::HashMap;
 
     #[test]
     fn parse_size_units() {

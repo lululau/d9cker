@@ -8,6 +8,8 @@ Browse containers, services, compose projects, volumes and networks across every
 Docker engine you have — local sockets *and* `ssh://` remotes — without leaving
 the terminal.
 
+[![CI](https://github.com/loyalpartner/d9cker/actions/workflows/ci.yml/badge.svg)](https://github.com/loyalpartner/d9cker/actions/workflows/ci.yml)
+[![AUR](https://img.shields.io/aur/version/d9cker-bin?logo=archlinux&label=AUR)](https://aur.archlinux.org/packages/d9cker-bin)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange?logo=rust)](https://www.rust-lang.org/)
 [![ratatui](https://img.shields.io/badge/tui-ratatui-blue)](https://ratatui.rs/)
 [![bollard](https://img.shields.io/badge/docker-bollard-2496ED?logo=docker)](https://github.com/fussybeaver/bollard)
@@ -43,6 +45,17 @@ swarm. d9cker puts all of that behind one keystroke each, on any engine, over ss
 | 🛡️ **Safe by default** | Every destructive action — delete, prune — asks first. |
 
 ## Install
+
+**Arch Linux (AUR)**
+
+```sh
+paru -S d9cker-bin      # or: yay -S d9cker-bin
+```
+
+**Prebuilt binary** — grab a tarball from [Releases](https://github.com/loyalpartner/d9cker/releases)
+(Linux x86_64/aarch64, macOS Intel/Apple Silicon).
+
+**From source**
 
 ```sh
 git clone https://github.com/loyalpartner/d9cker
@@ -119,8 +132,8 @@ vhs demo/demo.tape                          # -> demo/d9cker.gif
 Early, but genuinely useful — built and tested against local engines, remote
 `ssh://` dev boxes and a production swarm.
 
-Not done yet: pinning the first column while scrolling, applying compose changes
-(`up -d`) from the TUI, prebuilt release binaries.
+Not done yet: pinning the first column while scrolling, and applying compose
+changes (`up -d`) from the TUI.
 
 ## License
 
