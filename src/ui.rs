@@ -28,7 +28,13 @@ pub fn render(f: &mut Frame, app: &App) {
         Mode::Inspect => render_inspect(f, app, chunks[2]),
         Mode::Stats => render_stats(f, app, chunks[2]),
         Mode::Help => {
-            render_table(f, app, chunks[2]);
+            // render whatever you were looking at, then the help on top
+            match app.prev_mode {
+                Mode::Logs => render_logs(f, app, chunks[2]),
+                Mode::Inspect => render_inspect(f, app, chunks[2]),
+                Mode::Stats => render_stats(f, app, chunks[2]),
+                _ => render_table(f, app, chunks[2]),
+            }
             render_help(f, chunks[2]);
         }
     }
@@ -105,7 +111,7 @@ fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
     bot.push(Span::styled("╭", dark));
     used += 1;
 
-    for v in crate::app::TABS {
+    for v in app.tabs() {
         // a little border segment before each tab
         top.push(Span::raw("  "));
         bot.push(Span::styled("──", dark));
@@ -462,6 +468,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  j / k, ↓ / ↑", "move selection"),
         help_line("  g / G", "top / bottom"),
         help_line("  h / l", "previous / next tab"),
+        help_line("  Tab / S-Tab", "next / prev tab — works from anywhere (exits / search)"),
         help_line("  1..7", "jump to Containers…Contexts (6 Volumes, 7 Networks)"),
         help_line("  : cmd", "co, im, svc, nodes, ctx, q  (jump to view)"),
         help_line("  /", "filter rows   (Esc clears)"),

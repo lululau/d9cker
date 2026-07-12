@@ -111,6 +111,7 @@ pub struct App {
     pub loading: bool,
 
     pub mode: Mode,
+    pub prev_mode: Mode,
     pub status: String,
 
     pub filter: String,
@@ -165,6 +166,7 @@ impl App {
             selected: 0,
             loading: true,
             mode: Mode::Table,
+            prev_mode: Mode::Table,
             status: "Loading…".into(),
             filter: String::new(),
             filtering: false,
@@ -282,7 +284,15 @@ impl App {
                     self.status.clear();
                 }
             }
-            Msg::Meta { swarm } => self.swarm = swarm,
+            Msg::Meta { swarm } => {
+                self.swarm = swarm;
+                // context has no swarm: don't strand the user on a swarm-only view
+                if self.swarm != "active"
+                    && matches!(self.view, View::Services | View::Nodes | View::ServiceTasks)
+                {
+                    self.switch_view(View::Containers);
+                }
+            }
             Msg::LogLine(chunk) => {
                 for line in chunk.split('\n') {
                     self.logs.push(line.to_string());
@@ -400,6 +410,7 @@ impl App {
             self.selected = 0;
             self.items.clear();
             self.filter.clear();
+            self.filtering = false;
             self.sort_col = None;
             self.sort_desc = false;
             self.status = format!("tasks of {}", self.drill_service);
@@ -664,20 +675,49 @@ impl App {
 
     // ---- key handling --------------------------------------------------
 
-    fn tab_index(&self) -> usize {
+    /// Tabs visible for the current context. Services/Nodes are swarm-only, so
+    /// they disappear on a non-swarm engine. (Unknown-yet == show, to avoid a
+    /// flicker while `docker info` is still in flight.)
+    pub fn tabs(&self) -> Vec<View> {
+        let swarm = self.swarm.is_empty() || self.swarm == "active";
         TABS.iter()
+            .copied()
+            .filter(|v| swarm || !matches!(v, View::Services | View::Nodes))
+            .collect()
+    }
+
+    fn tab_index(&self) -> usize {
+        let tabs = self.tabs();
+        tabs.iter()
             .position(|v| *v == self.view)
-            .unwrap_or(if self.view == View::ServiceTasks { 1 } else { 0 })
+            .unwrap_or_else(|| {
+                if self.view == View::ServiceTasks {
+                    tabs.iter().position(|v| *v == View::Services).unwrap_or(0)
+                } else {
+                    0
+                }
+            })
     }
 
     fn next_view(&mut self) {
-        let i = (self.tab_index() + 1) % TABS.len();
-        self.switch_view(TABS[i]);
+        let tabs = self.tabs();
+        let i = (self.tab_index() + 1) % tabs.len();
+        self.switch_view(tabs[i]);
     }
 
     fn prev_view(&mut self) {
-        let i = (self.tab_index() + TABS.len() - 1) % TABS.len();
-        self.switch_view(TABS[i]);
+        let tabs = self.tabs();
+        let i = (self.tab_index() + tabs.len() - 1) % tabs.len();
+        self.switch_view(tabs[i]);
+    }
+
+    /// Leave any text-input sub-mode (filter / command / log search).
+    fn exit_inputs(&mut self) {
+        self.commanding = false;
+        self.command.clear();
+        self.filtering = false;
+        self.filter.clear();
+        self.log_searching = false;
     }
 
     fn cycle_sort(&mut self) {
@@ -727,6 +767,23 @@ impl App {
             return;
         }
 
+        // Tab / Shift-Tab switch tabs from anywhere and drop any text-input
+        // sub-mode — the escape hatch that `/` search was missing.
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.exit_inputs();
+            if self.mode != Mode::Table {
+                self.stop_logs();
+                self.stop_stats();
+                self.mode = Mode::Table;
+            }
+            if key.code == KeyCode::Tab {
+                self.next_view();
+            } else {
+                self.prev_view();
+            }
+            return;
+        }
+
         // text-input overlays
         if self.commanding {
             self.command_key(key.code);
@@ -737,12 +794,19 @@ impl App {
             return;
         }
 
+        // help is global — reachable from any mode, returns to where you were
+        if key.code == KeyCode::Char('?') && !self.log_searching && self.mode != Mode::Help {
+            self.prev_mode = self.mode;
+            self.mode = Mode::Help;
+            return;
+        }
+
         match self.mode {
             Mode::Table => self.table_key(key.code),
             Mode::Logs => self.logs_key(key.code),
             Mode::Inspect => self.inspect_key(key.code),
             Mode::Stats => self.stats_key(key.code),
-            Mode::Help => self.mode = Mode::Table,
+            Mode::Help => self.mode = self.prev_mode,
         }
     }
 
@@ -757,7 +821,8 @@ impl App {
             }
             // digit keys follow the tab-bar order (TABS) so they always match
             KeyCode::Char(c @ '1'..='7') => {
-                if let Some(&v) = TABS.get(c as usize - '1' as usize) {
+                let tabs = self.tabs();
+                if let Some(&v) = tabs.get(c as usize - '1' as usize) {
                     self.switch_view(v);
                 }
             }
@@ -821,7 +886,6 @@ impl App {
             }
             KeyCode::Char('o') => self.cycle_sort(),
             KeyCode::Char('O') => self.sort_desc = !self.sort_desc,
-            KeyCode::Char('?') => self.mode = Mode::Help,
             KeyCode::Esc => {
                 if self.view == View::ServiceTasks {
                     self.switch_view(self.prev_view);

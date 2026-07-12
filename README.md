@@ -5,7 +5,8 @@ A [k9s](https://k9scli.io/)-style terminal UI for managing **Docker** and
 
 - 🔀 **Context switching** — browse and switch between all your `docker context`s
   (local sockets, TLS, and `ssh://` remotes) without touching your global config.
-- 🐝 **Swarm-aware** — list services and nodes, drill into a service's tasks, scale replicas.
+- 🐝 **Swarm-aware tabs** — Services/Nodes only appear on contexts that actually run swarm.
+- 🐝 **Swarm** — list services and nodes, drill into a service's tasks, scale replicas.
 - 📦 **Volumes & networks** — browse & inspect; container IPs, network subnets, and lazy volume disk-usage (df).
 - 🧹 **Running-first** — containers default to running-only (exited hidden but one key away, and dimmed when shown), so the list stays readable.
 - 📊 **Live stats** — per-container CPU%, memory, network & block IO, PIDs, updating ~1/s.
@@ -42,6 +43,7 @@ Requires a working Rust toolchain and access to at least one Docker endpoint.
 | Key            | Action                                             |
 |----------------|----------------------------------------------------|
 | `h` / `l`      | previous / next tab                                |
+| `Tab`/`S-Tab`  | next / prev tab — from **any** mode (exits `/` search) |
 
 | `1`–`7`        | Containers · Services · Nodes · Images · Volumes · Networks · Contexts |
 | `:`            | command mode (`co`, `im`, `svc`, `nodes`, `ctx`)   |
@@ -62,7 +64,7 @@ Requires a working Rust toolchain and access to at least one Docker endpoint.
 | `u`            | refresh volume sizes (Volumes)                     |
 | `f` / `w`      | toggle log follow / wrap                           |
 | `/` `s` (logs) | search-filter logs / save logs to file             |
-| `?`            | help                                               |
+| `?`            | help — global, from any mode                        |
 | `q` / `Ctrl-c` | quit                                               |
 
 ## Status
