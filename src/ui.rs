@@ -2,10 +2,11 @@
 
 use crate::app::{App, Mode};
 use ratatui::{
+    buffer::Buffer,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Wrap},
+    widgets::{Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Widget, Wrap},
     Frame,
 };
 
@@ -76,6 +77,12 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
         left.push(Span::styled(
             format!("  › tasks: {}", app.drill_service),
             Style::default().fg(Color::Magenta),
+        ));
+    }
+    if app.hscroll > 0 {
+        left.push(Span::styled(
+            format!("   →{}", app.hscroll),
+            Style::default().fg(Color::DarkGray),
         ));
     }
     if let Some(col) = app.sort_col {
@@ -198,17 +205,62 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         Row::new(cells).style(style)
     });
 
-    let widths = column_widths(app.view);
+    // Frame first, then render the table off-screen at its *natural* width and
+    // blit the horizontal window — so ←/→ reveals columns at full width instead
+    // of just squeezing them.
+    let block = Block::default()
+        .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let nat = natural_widths(app, &vis);
+    let spacing: u16 = 2;
+    let total: u16 = nat
+        .iter()
+        .sum::<u16>()
+        .saturating_add(spacing * nat.len().saturating_sub(1) as u16)
+        .max(inner.width);
+
+    let widths: Vec<Constraint> = nat.iter().map(|w| Constraint::Length(*w)).collect();
     let table = Table::new(rows, widths)
         .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
-        .column_spacing(2);
-    f.render_widget(table, area);
+        .column_spacing(spacing);
+
+    let canvas = Rect::new(0, 0, total, inner.height);
+    let mut buf = Buffer::empty(canvas);
+    Widget::render(table, canvas, &mut buf);
+
+    let max_scroll = total.saturating_sub(inner.width);
+    let sx = (app.hscroll as u16).min(max_scroll);
+    let dst = f.buffer_mut();
+    for y in 0..inner.height {
+        for x in 0..inner.width {
+            let src = sx + x;
+            if src < total {
+                dst[(inner.x + x, inner.y + y)] = buf[(src, y)].clone();
+            }
+        }
+    }
+}
+
+/// Width each column needs to show its content in full (capped so one giant
+/// cell can't blow the canvas out).
+fn natural_widths(app: &App, vis: &[usize]) -> Vec<u16> {
+    let cols = app.view.columns();
+    let mut w: Vec<usize> = cols.iter().map(|c| c.chars().count() + 1).collect();
+    for &i in vis {
+        for (ci, cell) in app.items[i].cells.iter().enumerate() {
+            if ci < w.len() {
+                w[ci] = w[ci].max(cell.chars().count());
+            }
+        }
+    }
+    w.iter().map(|&x| x.clamp(3, 90) as u16).collect()
 }
 
 fn state_color(view: View, col: usize, v: &str) -> Option<Color> {
@@ -233,74 +285,6 @@ fn state_color(view: View, col: usize, v: &str) -> Option<Color> {
 }
 
 use crate::docker::View;
-fn column_widths(view: View) -> Vec<Constraint> {
-    match view {
-        View::Containers => vec![
-            Constraint::Length(12),
-            Constraint::Percentage(20),
-            Constraint::Percentage(24),
-            Constraint::Length(8),
-            Constraint::Percentage(18),
-            Constraint::Length(16),
-            Constraint::Percentage(14),
-        ],
-        View::Images => vec![
-            Constraint::Percentage(40),
-            Constraint::Percentage(18),
-            Constraint::Length(14),
-            Constraint::Length(10),
-            Constraint::Percentage(20),
-        ],
-        View::Services => vec![
-            Constraint::Percentage(28),
-            Constraint::Length(12),
-            Constraint::Length(10),
-            Constraint::Percentage(35),
-            Constraint::Percentage(20),
-        ],
-        View::Nodes => vec![
-            Constraint::Percentage(30),
-            Constraint::Length(10),
-            Constraint::Length(14),
-            Constraint::Length(14),
-            Constraint::Percentage(20),
-        ],
-        View::Contexts => vec![
-            Constraint::Length(2),
-            Constraint::Percentage(20),
-            Constraint::Percentage(40),
-            Constraint::Percentage(40),
-        ],
-        View::Volumes => vec![
-            Constraint::Percentage(30),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Length(8),
-            Constraint::Percentage(42),
-        ],
-        View::Compose => vec![
-            Constraint::Percentage(22),
-            Constraint::Length(12),
-            Constraint::Length(11),
-            Constraint::Percentage(55),
-        ],
-        View::Networks => vec![
-            Constraint::Percentage(28),
-            Constraint::Length(12),
-            Constraint::Length(8),
-            Constraint::Length(20),
-            Constraint::Length(14),
-        ],
-        View::ServiceTasks => vec![
-            Constraint::Percentage(24),
-            Constraint::Percentage(16),
-            Constraint::Length(9),
-            Constraint::Percentage(24),
-            Constraint::Percentage(20),
-            Constraint::Percentage(16),
-        ],
-    }
-}
 
 fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     let inner_h = area.height.saturating_sub(2) as usize;
@@ -312,7 +296,16 @@ fn render_logs(f: &mut Frame, app: &App, area: Rect) {
     let end = total - scrollback;
     let start = end.saturating_sub(inner_h);
 
-    let text: Vec<Line> = lines[start..end].iter().map(|l| Line::from((*l).clone())).collect();
+    let text: Vec<Line> = lines[start..end]
+        .iter()
+        .map(|l| {
+            if app.log_wrap {
+                Line::from((*l).clone())
+            } else {
+                Line::from(l.chars().skip(app.hscroll).collect::<String>())
+            }
+        })
+        .collect();
     let follow = if app.log_follow { "FOLLOW" } else { "PAUSED" };
     let wrap = if app.log_wrap { " wrap" } else { "" };
     let filt = if app.log_filter.is_empty() {
@@ -339,7 +332,7 @@ fn render_inspect(f: &mut Frame, app: &App, area: Rect) {
     let end = (offset + inner_h).min(app.inspect_lines.len());
     let text: Vec<Line> = app.inspect_lines[offset..end]
         .iter()
-        .map(|l| Line::from(l.clone()))
+        .map(|l| Line::from(l.chars().skip(app.hscroll).collect::<String>()))
         .collect();
     let title = format!(" inspect: {} ", app.inspect_title);
     let p = Paragraph::new(text)
@@ -474,6 +467,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("Navigation", ""),
         help_line("  j / k, ↓ / ↑", "move selection"),
         help_line("  g / G", "top / bottom"),
+        help_line("  ← / →", "scroll horizontally (see truncated content)"),
         help_line("  h / l", "previous / next tab"),
         help_line("  Tab / S-Tab", "next / prev tab — works from anywhere (exits / search)"),
         help_line("  1..7", "jump to Containers…Contexts (6 Volumes, 7 Networks)"),

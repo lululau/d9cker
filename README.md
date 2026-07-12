@@ -50,6 +50,7 @@ Requires a working Rust toolchain and access to at least one Docker endpoint.
 | `:`            | command mode (`co`, `im`, `svc`, `nodes`, `ctx`)   |
 | `j`/`k`, `↓`/`↑` | move selection                                   |
 | `g` / `G`      | jump to top / bottom                               |
+| `←` / `→`      | scroll horizontally — reveals truncated content at full width |
 | `/`            | filter rows (`Esc` clears)                         |
 | `Enter`        | Services → tasks · Contexts → switch context       |
 | `t`            | live stats — top (CPU / MEM / NET / BLK / PIDs)    |

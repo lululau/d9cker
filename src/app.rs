@@ -11,6 +11,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::AbortHandle;
 
 const LOG_CAP: usize = 5000;
+/// columns moved per ←/→ press
+const HSTEP: usize = 8;
 
 /// The tab order for h/l navigation and the header tab bar.
 pub const TABS: [View; 8] = [
@@ -125,6 +127,7 @@ pub struct App {
     pub drill_service: String,
     prev_view: View,
 
+    pub hscroll: usize,
     pub sort_col: Option<usize>,
     pub sort_desc: bool,
     /// Containers view: include exited/stopped (docker ps -a) or running only.
@@ -179,6 +182,7 @@ impl App {
             confirm: None,
             drill_service: String::new(),
             prev_view: View::Containers,
+            hscroll: 0,
             sort_col: None,
             sort_desc: false,
             show_all: false,
@@ -406,6 +410,7 @@ impl App {
         self.filtering = false;
         self.sort_col = None;
         self.sort_desc = false;
+        self.hscroll = 0;
         self.refresh();
         if view == View::Volumes && self.vol_sizes.is_empty() {
             self.fetch_volume_sizes();
@@ -478,6 +483,7 @@ impl App {
         self.log_follow = true;
         self.log_filter.clear();
         self.log_searching = false;
+        self.hscroll = 0;
         self.log_title = title;
         self.mode = Mode::Logs;
 
@@ -577,6 +583,7 @@ impl App {
         self.inspect_lines = vec!["loading…".into()];
         self.inspect_title = title;
         self.inspect_scroll = 0;
+        self.hscroll = 0;
         self.mode = Mode::Inspect;
         let tx = self.tx.clone();
         let docker = self.docker.clone();
@@ -927,9 +934,11 @@ impl App {
                 View::Containers | View::ServiceTasks => self.start_logs(),
                 _ => {}
             },
-            // h / l switch tabs (vim-style); logs moved to Enter
-            KeyCode::Char('l') | KeyCode::Right => self.next_view(),
-            KeyCode::Char('h') | KeyCode::Left => self.prev_view(),
+            // h / l switch tabs (vim-style); ←/→ scroll the table horizontally
+            KeyCode::Char('l') => self.next_view(),
+            KeyCode::Char('h') => self.prev_view(),
+            KeyCode::Right => self.hscroll += HSTEP,
+            KeyCode::Left => self.hscroll = self.hscroll.saturating_sub(HSTEP),
             KeyCode::Char('i') => self.start_inspect(),
             KeyCode::Char('e') => match self.view {
                 View::Containers => {
@@ -1073,6 +1082,8 @@ impl App {
                 self.log_follow = false;
             }
             KeyCode::Char('w') => self.log_wrap = !self.log_wrap,
+            KeyCode::Right => self.hscroll += HSTEP,
+            KeyCode::Left => self.hscroll = self.hscroll.saturating_sub(HSTEP),
             KeyCode::Char('s') => self.save_logs(),
             KeyCode::Char('f') => {
                 self.log_follow = !self.log_follow;
@@ -1126,6 +1137,8 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.inspect_scroll = self.inspect_scroll.saturating_sub(1)
             }
+            KeyCode::Right => self.hscroll += HSTEP,
+            KeyCode::Left => self.hscroll = self.hscroll.saturating_sub(HSTEP),
             KeyCode::PageDown => self.inspect_scroll += 10,
             KeyCode::PageUp => self.inspect_scroll = self.inspect_scroll.saturating_sub(10),
             KeyCode::Char('g') | KeyCode::Home => self.inspect_scroll = 0,
