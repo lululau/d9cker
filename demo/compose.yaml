@@ -1,0 +1,16 @@
+name: shop
+services:
+  web:      { image: nginx:alpine,        pull_policy: never, ports: ["8080:80"] }
+  cache:    { image: redis:alpine,        pull_policy: never, ports: ["6379:6379"] }
+  db:       { image: postgres:16-alpine,  pull_policy: never, environment: { POSTGRES_PASSWORD: demo, POSTGRES_DB: shop } }
+  queue:    { image: redis:alpine,        pull_policy: never, command: ["redis-server","--port","6380"] }
+  worker:
+    image: alpine:3.20
+    pull_policy: never
+    command: ["sh","-c","i=0; while true; do i=$$((i+1)); echo \"[worker] job #$$i processed  (queue depth $$((20-i%20)))\"; sleep 1; done"]
+  mailer:
+    image: alpine:3.20
+    pull_policy: never
+    command: ["sh","-c","while true; do echo \"[mailer] delivered receipt to customer\"; sleep 4; done"]
+  search:   { image: nginx:alpine, pull_policy: never }
+  metrics:  { image: nginx:alpine, pull_policy: never }

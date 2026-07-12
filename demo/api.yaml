@@ -1,0 +1,9 @@
+name: api
+services:
+  gateway:  { image: traefik:v3.0, pull_policy: never, command: ["--api.insecure=true","--providers.docker=false"], ports: ["8081:8080"] }
+  users:    { image: nginx:alpine, pull_policy: never }
+  orders:   { image: nginx:alpine, pull_policy: never }
+  auth:
+    image: alpine:3.20
+    pull_policy: never
+    command: ["sh","-c","while true; do echo \"[auth] issued JWT (ttl=3600s)\"; sleep 3; done"]

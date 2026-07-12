@@ -1,75 +1,127 @@
+<div align="center">
+
 # d9cker
 
-A [k9s](https://k9scli.io/)-style terminal UI for managing **Docker** and
-**Docker Swarm**, written in Rust.
+**A [k9s](https://k9scli.io/)-style terminal UI for Docker & Docker Swarm.**
 
-- 🔀 **Context switching** — browse and switch between all your `docker context`s
-  (local sockets, TLS, and `ssh://` remotes) without touching your global config.
-- 🐝 **Context-aware tabs** — Services/Nodes appear only on swarm engines; **Compose** appears only where compose projects exist.
-- 🧩 **Compose** — lists projects with their **config file paths** (like `docker compose ls`); `i` views the compose file, `e` opens it in your editor (over ssh for remote contexts), Enter jumps to its containers.
-- 🐝 **Swarm** — list services and nodes, drill into a service's tasks, scale replicas.
-- 📦 **Volumes & networks** — browse & inspect; container IPs, network subnets, and lazy volume disk-usage (df).
-- 🧹 **Running-first** — containers default to running-only (exited hidden but one key away, and dimmed when shown), so the list stays readable.
-- 📊 **Live stats** — per-container CPU%, memory, network & block IO, PIDs, updating ~1/s.
-- 📜 **Live logs** — stream `logs -f` for any container or service, with follow,
-  scrollback and filtering.
-- ⚡ **Lifecycle actions** — start / stop / restart / pause / remove containers.
-- 🖥️ **exec** — drop into an interactive shell inside a container.
+Browse containers, services, compose projects, volumes and networks across every
+Docker engine you have — local sockets *and* `ssh://` remotes — without leaving
+the terminal.
 
-## Why bollard (native API) + a CLI fallback
+[![Rust](https://img.shields.io/badge/rust-1.75%2B-orange?logo=rust)](https://www.rust-lang.org/)
+[![ratatui](https://img.shields.io/badge/tui-ratatui-blue)](https://ratatui.rs/)
+[![bollard](https://img.shields.io/badge/docker-bollard-2496ED?logo=docker)](https://github.com/fussybeaver/bollard)
+[![license](https://img.shields.io/badge/license-MIT-green)](#license)
 
-d9cker talks to the Docker Engine over [bollard](https://github.com/fussybeaver/bollard)'s
-native API, with the `ssh` feature enabled. bollard's SSH transport is built on
-the `openssh` crate, which drives your **system `ssh` binary** — so remote
-contexts authenticate exactly like the Docker CLI does (respecting
-`~/.ssh/config`, ssh-agent, `ProxyJump`, `known_hosts`).
+<img src="demo/d9cker.gif" alt="d9cker demo" width="100%">
 
-Docker's context store (`~/.docker/contexts`) is read directly to enumerate
-contexts and resolve each to an endpoint, which is then handed to bollard.
+</div>
 
-The only place d9cker shells out to the `docker` CLI is `exec`, where handing
-the real TTY to `docker exec -it` is simpler and more robust than proxying an
-interactive session through the API.
+---
 
-## Build & run
+## Why
+
+`docker ps` tells you what *is*. It doesn't help you **navigate**.
+
+You end up juggling `docker logs -f`, `docker stats`, `docker compose ls` and a
+pile of `--context` flags — across a laptop engine, a staging box and a prod
+swarm. d9cker puts all of that behind one keystroke each, on any engine, over ssh.
+
+## Features
+
+| | |
+|---|---|
+| 🔀 **Context switching** | Every `docker context` — local socket, TLS, `ssh://` remote. Switching never touches your global `docker context use`. |
+| 🧠 **Context-aware tabs** | Services/Nodes appear only on swarm engines. Compose appears only where compose projects exist. The UI adapts to the engine you're on. |
+| 📜 **Live logs** | Stream `logs -f` for any container or service. Follow, scrollback, in-log search (`/`), wrap, save to file. |
+| 📊 **Live stats** | Per-container CPU %, memory, network and block I/O, PIDs — streaming, ~1/sec. |
+| 🧩 **Compose** | Lists projects with their **config-file paths**. View the compose file (`i`) or open it in your editor (`e`) — over ssh for remote engines. |
+| 🐝 **Swarm** | Services and nodes; drill into a service's tasks; scale replicas with `+` / `-`. |
+| ⚡ **Lifecycle** | start / stop / restart / pause / unpause / remove, `exec` a shell, `attach`. |
+| 🧹 **Running-first** | Containers default to running-only — exited ones are one key away (`a`) and dimmed when shown, so the list stays readable. |
+| 🔎 **Filter & sort** | `/` filters rows; `o` / `O` sorts any column (size-aware: `1.5GB` > `900MB`); `←` / `→` scrolls to reveal truncated values. |
+| 🛡️ **Safe by default** | Every destructive action — delete, prune — asks first. |
+
+## Install
 
 ```sh
-cargo run --release
+git clone https://github.com/loyalpartner/d9cker
+cd d9cker
+cargo install --path .
 ```
 
-Requires a working Rust toolchain and access to at least one Docker endpoint.
+Then just:
+
+```sh
+d9cker
+```
+
+It picks up your current `docker context`. No configuration.
 
 ## Keybindings
 
-| Key            | Action                                             |
-|----------------|----------------------------------------------------|
-| `h` / `l`      | previous / next tab                                |
-| `Tab`/`S-Tab`  | next / prev tab — from **any** mode (exits `/` search) |
+Press `?` at any time — help is global and overlays whatever you're looking at.
 
-| `1`–`7`        | Containers · Services · Nodes · Images · Volumes · Networks · Contexts |
-| `:`            | command mode (`co`, `im`, `svc`, `nodes`, `ctx`)   |
-| `j`/`k`, `↓`/`↑` | move selection                                   |
-| `g` / `G`      | jump to top / bottom                               |
-| `←` / `→`      | scroll horizontally — reveals truncated content at full width |
-| `/`            | filter rows (`Esc` clears)                         |
-| `Enter`        | Services → tasks · Contexts → switch context       |
-| `t`            | live stats — top (CPU / MEM / NET / BLK / PIDs)    |
-| `a`            | toggle all / running-only containers (`docker ps -a`) |
-| `i`            | inspect (describe)                                 |
-| `e`            | exec shell into container                          |
-| `s` / `r` / `S`| stop / restart / start                             |
-| `p` / `P`      | pause / unpause                                    |
-| `x`            | delete resource — container/image/volume/network (confirm) |
-| `+` / `-`      | scale service up / down (Services)                 |
-| `A`            | attach to container (Ctrl-P Ctrl-Q to detach)      |
-| `:prune`       | prune dangling images                              |
-| `u`            | refresh volume sizes (Volumes)                     |
-| `f` / `w`      | toggle log follow / wrap                           |
-| `/` `s` (logs) | search-filter logs / save logs to file             |
-| `?`            | help — global, from any mode                        |
-| `q` / `Ctrl-c` | quit                                               |
+| Key | Action |
+|---|---|
+| `h` / `l`, `Tab` / `S-Tab` | previous / next tab (`Tab` works from *any* mode) |
+| `1`…`8` | jump straight to a tab |
+| `j` / `k`, `g` / `G` | move selection · top / bottom |
+| `←` / `→` | scroll horizontally (reveal truncated values) |
+| `/` | filter rows · `o` / `O` sort column / reverse |
+| `Enter` | Containers → **logs** · Services → tasks · Compose → containers · Contexts → **switch** |
+| `t` | live stats (CPU / MEM / NET / BLK) |
+| `i` | inspect · view compose file (Compose) |
+| `e` | exec into container · edit compose file (Compose) |
+| `a` | toggle all / running-only containers |
+| `s` / `r` / `S` | stop / restart / start · `p` / `P` pause / unpause |
+| `+` / `-` | scale a swarm service |
+| `x` | delete (container / image / volume / network) — asks first |
+| `:` | command mode (`co`, `svc`, `nodes`, `ctx`, `prune`, `q`) |
+| `q` / `Ctrl-c` | quit |
+
+## How it works
+
+**Native API, not CLI scraping.** d9cker talks to the Docker Engine through
+[bollard](https://github.com/fussybeaver/bollard), so listings, log streams and
+stats streams all ride one connection.
+
+**ssh contexts work exactly like they do in the CLI.** bollard's ssh transport is
+built on the [`openssh`](https://crates.io/crates/openssh) crate, which drives your
+*system* `ssh` binary — so remote engines authenticate the same way
+`docker --context` does, honouring `~/.ssh/config`, ssh-agent, `ProxyJump` and
+`known_hosts`.
+
+**The context store is read directly.** bollard has no notion of Docker contexts, so
+d9cker parses `~/.docker/contexts` itself and resolves each one to an endpoint.
+
+**Compose without forking the CLI.** `docker compose ls` is a CLI plugin, not an
+Engine API — it aggregates `com.docker.compose.*` container labels client-side.
+d9cker does the same aggregation natively, so the Compose tab costs one API call
+rather than a subprocess on every refresh.
+
+**The few honest shell-outs.** Interactive `exec` / `attach` (handing over the real
+TTY), and reading/editing a compose file on a remote host — there is no Engine API
+for the host filesystem, so that goes over ssh.
+
+## Reproducing the demo
+
+The GIF is generated, not hand-recorded:
+
+```sh
+docker compose -f demo/compose.yaml up -d   # a small shop + api stack
+docker compose -f demo/api.yaml     up -d
+vhs demo/demo.tape                          # -> demo/d9cker.gif
+```
 
 ## Status
 
-Early MVP. Built for and tested against local (colima/orbstack) and remote
-`ssh://` swarm contexts.
+Early, but genuinely useful — built and tested against local engines, remote
+`ssh://` dev boxes and a production swarm.
+
+Not done yet: pinning the first column while scrolling, applying compose changes
+(`up -d`) from the TUI, prebuilt release binaries.
+
+## License
+
+MIT

@@ -374,7 +374,8 @@ fn level_color(pct: f64) -> Color {
 fn render_stats(f: &mut Frame, app: &App, area: Rect) {
     let s = app.stats.clone().unwrap_or_default();
     let outer = Block::default()
-        .borders(Borders::ALL).border_type(BorderType::Rounded)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title(format!(" stats: {} ", app.stats_title))
         .border_style(Style::default().fg(ACCENT));
     let inner = outer.inner(area);
@@ -384,55 +385,74 @@ fn render_stats(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1), // cpu
         Constraint::Length(1), // mem
         Constraint::Length(1), // spacer
-        Constraint::Length(1), // net/blk/pids
-        Constraint::Min(1),    // hint
+        Constraint::Length(1), // net / blk / pids
+        Constraint::Min(0),
     ])
     .split(inner);
 
-    let cpu = Gauge::default()
-        .gauge_style(Style::default().fg(level_color(s.cpu_pct)))
-        .ratio((s.cpu_pct / 100.0).clamp(0.0, 1.0))
-        .label(format!("CPU  {:.1}%", s.cpu_pct));
-    f.render_widget(cpu, rows[0]);
+    let track = Color::Rgb(52, 56, 70);
+    let dim = Style::default().fg(Color::DarkGray);
 
-    let mem = Gauge::default()
-        .gauge_style(Style::default().fg(level_color(s.mem_pct)))
-        .ratio((s.mem_pct / 100.0).clamp(0.0, 1.0))
-        .label(format!(
-            "MEM  {} / {} ({:.1}%)",
+    // label | bar | value  — far easier to read than a label floating on the bar
+    let bar_row = |f: &mut Frame, area: Rect, name: &str, pct: f64, value: String| {
+        let cols = Layout::horizontal([
+            Constraint::Length(5),
+            Constraint::Min(10),
+            Constraint::Length(26),
+        ])
+        .split(area);
+        f.render_widget(Paragraph::new(Line::from(Span::styled(name.to_string(), dim))), cols[0]);
+        f.render_widget(
+            Gauge::default()
+                .gauge_style(Style::default().fg(level_color(pct)).bg(track))
+                .ratio((pct / 100.0).clamp(0.0, 1.0))
+                .label(""),
+            cols[1],
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                value,
+                Style::default().fg(level_color(pct)).add_modifier(Modifier::BOLD),
+            )))
+            .alignment(Alignment::Right),
+            cols[2],
+        );
+    };
+
+    bar_row(f, rows[0], "CPU", s.cpu_pct, format!("{:.1}%", s.cpu_pct));
+    bar_row(
+        f,
+        rows[1],
+        "MEM",
+        s.mem_pct,
+        format!(
+            "{} / {}",
             crate::docker::human_size(s.mem_used as i64),
-            crate::docker::human_size(s.mem_limit as i64),
-            s.mem_pct
-        ));
-    f.render_widget(mem, rows[1]);
+            crate::docker::human_size(s.mem_limit as i64)
+        ),
+    );
 
     let info = Line::from(vec![
-        Span::styled("NET ", Style::default().fg(Color::DarkGray)),
+        Span::styled("NET ", dim),
         Span::raw(format!(
             "↓{} ↑{}",
             crate::docker::human_size(s.net_rx as i64),
             crate::docker::human_size(s.net_tx as i64)
         )),
-        Span::styled("    BLK ", Style::default().fg(Color::DarkGray)),
+        Span::styled("    BLK ", dim),
         Span::raw(format!(
             "r{} w{}",
             crate::docker::human_size(s.blk_r as i64),
             crate::docker::human_size(s.blk_w as i64)
         )),
-        Span::styled("    PIDs ", Style::default().fg(Color::DarkGray)),
+        Span::styled("    PIDs ", dim),
         Span::raw(s.pids.to_string()),
+        Span::styled(
+            if app.stats.is_none() { "     collecting…" } else { "" },
+            dim,
+        ),
     ]);
     f.render_widget(Paragraph::new(info), rows[3]);
-
-    let hint = if app.stats.is_none() {
-        "collecting…   Esc/q to exit"
-    } else {
-        "Esc/q to exit"
-    };
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray)))),
-        rows[4],
-    );
 }
 
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
