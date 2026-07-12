@@ -150,6 +150,7 @@ pub struct App {
 
     pending_exec: Option<String>,
     pending_attach: Option<String>,
+    pending_edit: Option<(String, String)>, // (engine host, file path)
 }
 
 impl App {
@@ -198,6 +199,7 @@ impl App {
             stats_task: None,
             pending_exec: None,
             pending_attach: None,
+            pending_edit: None,
         })
     }
 
@@ -560,6 +562,10 @@ impl App {
     // ---- inspect -------------------------------------------------------
 
     fn start_inspect(&mut self) {
+        if self.view == View::Compose {
+            self.view_compose_file();
+            return;
+        }
         let Some(kind) = self.view.inspect_type() else {
             self.status = "inspect: not available here".into();
             return;
@@ -582,6 +588,45 @@ impl App {
             };
             let _ = tx.send(msg);
         });
+    }
+
+    // ---- compose file: view / edit -------------------------------------
+
+    fn view_compose_file(&mut self) {
+        let Some(path) = self.selected_compose_file() else {
+            self.status = "no compose file recorded for this project".into();
+            return;
+        };
+        let host = match contexts::resolve_host(&self.context) {
+            Ok(h) => h,
+            Err(e) => {
+                self.status = format!("⚠ {e}");
+                return;
+            }
+        };
+        self.inspect_lines = vec!["loading…".into()];
+        self.inspect_title = path.clone();
+        self.inspect_scroll = 0;
+        self.mode = Mode::Inspect;
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let msg = match contexts::read_file(&host, &path).await {
+                Ok(text) => Msg::Inspect(text),
+                Err(e) => Msg::Error(format!("read {path}: {e}")),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    fn request_edit_compose(&mut self) {
+        let Some(path) = self.selected_compose_file() else {
+            self.status = "no compose file recorded for this project".into();
+            return;
+        };
+        match contexts::resolve_host(&self.context) {
+            Ok(host) => self.pending_edit = Some((host, path)),
+            Err(e) => self.status = format!("⚠ {e}"),
+        }
     }
 
     // ---- container lifecycle -------------------------------------------
@@ -695,6 +740,18 @@ impl App {
 
     pub fn take_pending_attach(&mut self) -> Option<String> {
         self.pending_attach.take()
+    }
+
+    pub fn take_pending_edit(&mut self) -> Option<(String, String)> {
+        self.pending_edit.take()
+    }
+
+    /// First config file recorded for the selected compose project.
+    fn selected_compose_file(&self) -> Option<String> {
+        let it = self.selected_item()?;
+        let raw = it.cells.get(3)?;
+        let first = raw.split(',').next()?.trim();
+        (!first.is_empty()).then(|| first.to_string())
     }
 
     // ---- key handling --------------------------------------------------
@@ -874,15 +931,15 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right => self.next_view(),
             KeyCode::Char('h') | KeyCode::Left => self.prev_view(),
             KeyCode::Char('i') => self.start_inspect(),
-            KeyCode::Char('e') => {
-                if self.view == View::Containers {
+            KeyCode::Char('e') => match self.view {
+                View::Containers => {
                     if let Some(it) = self.selected_item() {
                         self.pending_exec = Some(it.id.clone());
                     }
-                } else {
-                    self.status = "exec: only for containers".into();
                 }
-            }
+                View::Compose => self.request_edit_compose(),
+                _ => self.status = "e: exec (Containers) / edit (Compose)".into(),
+            },
             KeyCode::Char('t') => self.start_stats(),
             KeyCode::Char('a') => {
                 if self.view == View::Containers {

@@ -121,3 +121,67 @@ pub fn resolve_host(name: &str) -> Result<String> {
         .map(|c| c.host)
         .ok_or_else(|| anyhow::anyhow!("unknown context '{name}'"))
 }
+
+/// Split an `ssh://user@host[:port]` endpoint into (user@host, port).
+/// Returns None for non-ssh endpoints (local socket / tcp).
+pub fn ssh_target(host: &str) -> Option<(String, Option<String>)> {
+    let rest = host.strip_prefix("ssh://")?;
+    if let Some((hostpart, port)) = rest.rsplit_once(':') {
+        if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) {
+            return Some((hostpart.to_string(), Some(port.to_string())));
+        }
+    }
+    Some((rest.to_string(), None))
+}
+
+/// Single-quote a path for a remote shell.
+pub fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Read a file that lives on the context's engine host: over ssh for remote
+/// contexts, straight off the filesystem for local ones. (There is no Engine
+/// API for the host filesystem, so ssh is the honest route here.)
+pub async fn read_file(host: &str, path: &str) -> Result<String> {
+    if let Some((target, port)) = ssh_target(host) {
+        let mut c = tokio::process::Command::new("ssh");
+        c.arg("-o").arg("BatchMode=yes");
+        if let Some(p) = port {
+            c.arg("-p").arg(p);
+        }
+        c.arg(target).arg("cat").arg("--").arg(path);
+        let out = c.output().await?;
+        if !out.status.success() {
+            return Err(anyhow::anyhow!(
+                String::from_utf8_lossy(&out.stderr).trim().to_string()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Ok(std::fs::read_to_string(path)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sh_quote, ssh_target};
+
+    #[test]
+    fn ssh_target_parses() {
+        assert_eq!(
+            ssh_target("ssh://yizhi@10.0.0.106"),
+            Some(("yizhi@10.0.0.106".into(), None))
+        );
+        assert_eq!(
+            ssh_target("ssh://user@host:2222"),
+            Some(("user@host".into(), Some("2222".into())))
+        );
+        assert_eq!(ssh_target("unix:///var/run/docker.sock"), None);
+    }
+
+    #[test]
+    fn sh_quote_escapes() {
+        assert_eq!(sh_quote("/a/b.yml"), "'/a/b.yml'");
+        assert_eq!(sh_quote("/it's/x.yml"), "'/it'\\''s/x.yml'");
+    }
+}

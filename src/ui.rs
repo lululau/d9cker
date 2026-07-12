@@ -458,7 +458,7 @@ fn view_hint(view: View) -> &'static str {
         View::Nodes => "i inspect",
         View::Volumes => "i inspect · x del · u sizes",
         View::Networks => "i inspect · x del",
-        View::Compose => "Enter show project containers · config file shown in CONFIG FILES",
+        View::Compose => "Enter containers · i view compose file · e edit compose file",
         View::Contexts => "Enter switch context",
         View::ServiceTasks => "Esc back · l logs · i inspect",
     };
@@ -485,7 +485,8 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  t", "live stats — top (CPU/MEM/NET/BLK)"),
         help_line("  a", "toggle all / running-only (Containers)"),
         help_line("  i", "inspect (describe)"),
-        help_line("  e", "exec shell into container"),
+        help_line("  e", "exec into container · edit compose file (Compose)"),
+        help_line("  i", "inspect · view compose file (Compose)"),
         help_line("  s / r / S", "stop / restart / start"),
         help_line("  p / P", "pause / unpause"),
         help_line("  x", "delete resource (container/image/volume/network)"),

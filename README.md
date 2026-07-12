@@ -6,7 +6,7 @@ A [k9s](https://k9scli.io/)-style terminal UI for managing **Docker** and
 - 🔀 **Context switching** — browse and switch between all your `docker context`s
   (local sockets, TLS, and `ssh://` remotes) without touching your global config.
 - 🐝 **Context-aware tabs** — Services/Nodes appear only on swarm engines; **Compose** appears only where compose projects exist.
-- 🧩 **Compose** — lists projects with their **config file paths** (like `docker compose ls`); Enter jumps to a project's containers.
+- 🧩 **Compose** — lists projects with their **config file paths** (like `docker compose ls`); `i` views the compose file, `e` opens it in your editor (over ssh for remote contexts), Enter jumps to its containers.
 - 🐝 **Swarm** — list services and nodes, drill into a service's tasks, scale replicas.
 - 📦 **Volumes & networks** — browse & inspect; container IPs, network subnets, and lazy volume disk-usage (df).
 - 🧹 **Running-first** — containers default to running-only (exited hidden but one key away, and dimmed when shown), so the list stays readable.

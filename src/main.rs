@@ -100,6 +100,10 @@ async fn run(
                         if let Some(id) = app.take_pending_attach() {
                             attach_container(terminal, app, &id).await?;
                         }
+                        if let Some((host, path)) = app.take_pending_edit() {
+                            edit_file(terminal, &host, &path).await?;
+                            app.refresh();
+                        }
                     }
                     Some(Ok(_)) => {}       // resize, mouse, focus — redraw next loop
                     Some(Err(_)) | None => break,
@@ -175,6 +179,36 @@ async fn exec_shell(terminal: &mut ratatui::DefaultTerminal, app: &App, id: &str
         "command -v bash >/dev/null 2>&1 && exec bash || exec sh",
     ]);
     let _ = cmd.status().await;
+
+    *terminal = ratatui::init();
+    terminal.clear()?;
+    Ok(())
+}
+
+/// Suspend the TUI and open a file from the engine host in an editor.
+/// For ssh contexts the file lives on the remote box, so we edit it in place
+/// over ssh using the *remote* $EDITOR; local contexts just use the local one.
+async fn edit_file(
+    terminal: &mut ratatui::DefaultTerminal,
+    host: &str,
+    path: &str,
+) -> Result<()> {
+    ratatui::restore();
+
+    if let Some((target, port)) = contexts::ssh_target(host) {
+        let mut cmd = tokio::process::Command::new("ssh");
+        cmd.arg("-t");
+        if let Some(p) = port {
+            cmd.arg("-p").arg(p);
+        }
+        // remote shell expands $EDITOR (falling back to vi)
+        cmd.arg(target)
+            .arg(format!("${{EDITOR:-vi}} {}", contexts::sh_quote(path)));
+        let _ = cmd.status().await;
+    } else {
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+        let _ = tokio::process::Command::new(editor).arg(path).status().await;
+    }
 
     *terminal = ratatui::init();
     terminal.clear()?;
