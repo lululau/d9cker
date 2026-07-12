@@ -163,7 +163,10 @@ pub fn connect(host: &str) -> Result<Docker> {
 pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
     let items = match view {
         View::Containers => {
-            let opts = ListContainersOptionsBuilder::default().all(true).build();
+            // arg == "all" -> include exited/stopped; otherwise running only
+            let opts = ListContainersOptionsBuilder::default()
+                .all(arg == "all")
+                .build();
             docker
                 .list_containers(Some(opts))
                 .await?

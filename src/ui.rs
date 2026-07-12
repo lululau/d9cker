@@ -58,6 +58,14 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(swarm_color),
         ),
     ];
+    if app.view == View::Containers {
+        let (txt, col) = if app.show_all {
+            ("  all", Color::Yellow)
+        } else {
+            ("  running only", Color::DarkGray)
+        };
+        left.push(Span::styled(txt, Style::default().fg(col)));
+    }
     if app.view == View::ServiceTasks && !app.drill_service.is_empty() {
         left.push(Span::styled(
             format!("  › tasks: {}", app.drill_service),
@@ -162,11 +170,17 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     let rows = vis.iter().enumerate().map(|(row_i, &item_i)| {
         let it = &app.items[item_i];
         let selected = row_i == app.selected;
-        let style = if selected {
+        let mut style = if selected {
             Style::default().bg(Color::Rgb(40, 44, 52)).add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
+        // dim non-running containers: keeps the running ones visually dominant
+        if !selected && app.view == View::Containers {
+            if it.cells.get(3).map(|s| s != "running").unwrap_or(false) {
+                style = style.fg(Color::DarkGray);
+            }
+        }
         let cells = it.cells.iter().enumerate().map(|(ci, v)| {
             let mut cell = Cell::from(v.clone());
             // colorize the STATE-ish column
@@ -426,7 +440,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
 /// Contextual keybinding hint for the footer, per view.
 fn view_hint(view: View) -> &'static str {
     let keys = match view {
-        View::Containers => "Enter logs · i inspect · s/r/S stop/restart/start · e exec · A attach · x del",
+        View::Containers => "Enter logs · i inspect · t stats · a all/running · s/r/S stop/restart/start · e exec · x del",
         View::Images => "i inspect · x del · :prune",
         View::Services => "Enter tasks · l logs · i inspect · +/- scale",
         View::Nodes => "i inspect",
@@ -454,7 +468,8 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  o / O", "cycle sort column / reverse direction"),
         help_line("  Enter", "Containers→logs · Services→tasks · Contexts→switch"),
         help_line("Actions", ""),
-        help_line("  a", "live stats (CPU/MEM/NET/BLK)"),
+        help_line("  t", "live stats — top (CPU/MEM/NET/BLK)"),
+        help_line("  a", "toggle all / running-only (Containers)"),
         help_line("  i", "inspect (describe)"),
         help_line("  e", "exec shell into container"),
         help_line("  s / r / S", "stop / restart / start"),

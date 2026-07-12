@@ -15,9 +15,9 @@ const LOG_CAP: usize = 5000;
 /// The tab order for h/l navigation and the header tab bar.
 pub const TABS: [View; 7] = [
     View::Containers,
-    View::Images,
     View::Services,
     View::Nodes,
+    View::Images,
     View::Volumes,
     View::Networks,
     View::Contexts,
@@ -124,6 +124,8 @@ pub struct App {
 
     pub sort_col: Option<usize>,
     pub sort_desc: bool,
+    /// Containers view: include exited/stopped (docker ps -a) or running only.
+    pub show_all: bool,
     vol_sizes: HashMap<String, i64>,
 
     pub logs: Vec<String>,
@@ -173,6 +175,7 @@ impl App {
             prev_view: View::Containers,
             sort_col: None,
             sort_desc: false,
+            show_all: false,
             vol_sizes: HashMap::new(),
             logs: Vec::new(),
             log_title: String::new(),
@@ -199,6 +202,7 @@ impl App {
         match self.view {
             View::Contexts => self.context.clone(),
             View::ServiceTasks => self.drill_service.clone(),
+            View::Containers if self.show_all => "all".to_string(),
             _ => String::new(),
         }
     }
@@ -254,8 +258,7 @@ impl App {
     pub fn on_msg(&mut self, msg: Msg) {
         match msg {
             Msg::Data { view, arg, items } => {
-                let fresh = view == self.view
-                    && (view != View::ServiceTasks || arg == self.drill_service);
+                let fresh = view == self.view && arg == self.fetch_arg();
                 if fresh {
                     // remember the highlighted resource so the cursor doesn't
                     // jump when the list is replaced by a refresh
@@ -664,7 +667,7 @@ impl App {
     fn tab_index(&self) -> usize {
         TABS.iter()
             .position(|v| *v == self.view)
-            .unwrap_or(if self.view == View::ServiceTasks { 2 } else { 0 })
+            .unwrap_or(if self.view == View::ServiceTasks { 1 } else { 0 })
     }
 
     fn next_view(&mut self) {
@@ -785,7 +788,16 @@ impl App {
                     self.status = "exec: only for containers".into();
                 }
             }
-            KeyCode::Char('a') => self.start_stats(),
+            KeyCode::Char('t') => self.start_stats(),
+            KeyCode::Char('a') => {
+                if self.view == View::Containers {
+                    self.show_all = !self.show_all;
+                    self.selected = 0;
+                    self.refresh();
+                } else {
+                    self.status = "a: only in Containers (all/running)".into();
+                }
+            }
             KeyCode::Char('s') => self.action("stop"),
             KeyCode::Char('r') => self.action("restart"),
             KeyCode::Char('S') => self.action("start"),

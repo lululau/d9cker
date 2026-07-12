@@ -7,6 +7,7 @@ A [k9s](https://k9scli.io/)-style terminal UI for managing **Docker** and
   (local sockets, TLS, and `ssh://` remotes) without touching your global config.
 - 🐝 **Swarm-aware** — list services and nodes, drill into a service's tasks, scale replicas.
 - 📦 **Volumes & networks** — browse & inspect; container IPs, network subnets, and lazy volume disk-usage (df).
+- 🧹 **Running-first** — containers default to running-only (exited hidden but one key away, and dimmed when shown), so the list stays readable.
 - 📊 **Live stats** — per-container CPU%, memory, network & block IO, PIDs, updating ~1/s.
 - 📜 **Live logs** — stream `logs -f` for any container or service, with follow,
   scrollback and filtering.
@@ -41,14 +42,15 @@ Requires a working Rust toolchain and access to at least one Docker endpoint.
 | Key            | Action                                             |
 |----------------|----------------------------------------------------|
 | `h` / `l`      | previous / next tab                                |
-| `6` / `7`      | Volumes / Networks                                 |
-| `1`–`5`        | jump to Containers / Images / Services / Nodes / Contexts |
+
+| `1`–`7`        | Containers · Services · Nodes · Images · Volumes · Networks · Contexts |
 | `:`            | command mode (`co`, `im`, `svc`, `nodes`, `ctx`)   |
 | `j`/`k`, `↓`/`↑` | move selection                                   |
 | `g` / `G`      | jump to top / bottom                               |
 | `/`            | filter rows (`Esc` clears)                         |
 | `Enter`        | Services → tasks · Contexts → switch context       |
-| `a`            | live stats panel (CPU / MEM / NET / BLK / PIDs)    |
+| `t`            | live stats — top (CPU / MEM / NET / BLK / PIDs)    |
+| `a`            | toggle all / running-only containers (`docker ps -a`) |
 | `i`            | inspect (describe)                                 |
 | `e`            | exec shell into container                          |
 | `s` / `r` / `S`| stop / restart / start                             |
