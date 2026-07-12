@@ -138,6 +138,10 @@ pub struct App {
     pub drill_service: String,
     prev_view: View,
 
+    /// visible content rows, refreshed each frame from the terminal size
+    pub page_size: usize,
+    /// index of the first visible row — keeps the selection on screen
+    pub voffset: usize,
     pub hscroll: usize,
     pub sort_col: Option<usize>,
     pub sort_desc: bool,
@@ -193,6 +197,8 @@ impl App {
             confirm: None,
             drill_service: String::new(),
             prev_view: View::Containers,
+            page_size: 20,
+            voffset: 0,
             hscroll: 0,
             sort_col: None,
             sort_desc: false,
@@ -226,6 +232,20 @@ impl App {
             View::ServiceTasks => self.drill_service.clone(),
             View::Containers if self.show_all => "all".to_string(),
             _ => String::new(),
+        }
+    }
+
+    fn half_page(&self) -> usize {
+        (self.page_size / 2).max(1)
+    }
+
+    /// Scroll the window just enough that the selected row stays visible.
+    fn ensure_visible(&mut self) {
+        let h = self.page_size.max(1);
+        if self.selected < self.voffset {
+            self.voffset = self.selected;
+        } else if self.selected >= self.voffset + h {
+            self.voffset = self.selected + 1 - h;
         }
     }
 
@@ -298,6 +318,7 @@ impl App {
                                 .iter()
                                 .position(|&i| self.items[i].id == id)
                                 .unwrap_or_else(|| self.selected.min(vis.len().saturating_sub(1)));
+                            self.ensure_visible();
                         }
                         None => self.clamp_selection(),
                     }
@@ -408,6 +429,9 @@ impl App {
         } else if self.selected >= n {
             self.selected = n - 1;
         }
+        let max_off = n.saturating_sub(self.page_size.max(1));
+        self.voffset = self.voffset.min(max_off);
+        self.ensure_visible();
     }
 
     pub fn selected_item(&self) -> Option<&Item> {
@@ -423,6 +447,7 @@ impl App {
         }
         let next = (self.selected as isize + delta).clamp(0, n as isize - 1);
         self.selected = next as usize;
+        self.ensure_visible();
     }
 
     // ---- navigation ----------------------------------------------------
@@ -436,6 +461,7 @@ impl App {
         self.sort_col = None;
         self.sort_desc = false;
         self.hscroll = 0;
+        self.voffset = 0;
         self.refresh();
         if view == View::Volumes && self.vol_sizes.is_empty() {
             self.fetch_volume_sizes();
@@ -960,9 +986,17 @@ impl App {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Char('j') | KeyCode::Down => self.move_sel(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_sel(-1),
-            KeyCode::Char('g') | KeyCode::Home => self.selected = 0,
+            KeyCode::Char('d') => self.move_sel(self.half_page() as isize),
+            KeyCode::Char('u') => self.move_sel(-(self.half_page() as isize)),
+            KeyCode::PageDown => self.move_sel(self.page_size as isize),
+            KeyCode::PageUp => self.move_sel(-(self.page_size as isize)),
+            KeyCode::Char('g') | KeyCode::Home => {
+                self.selected = 0;
+                self.voffset = 0;
+            }
             KeyCode::Char('G') | KeyCode::End => {
-                self.selected = self.visible_indices().len().saturating_sub(1)
+                self.selected = self.visible_indices().len().saturating_sub(1);
+                self.ensure_visible();
             }
             // digit keys follow the tab-bar order (TABS) so they always match
             KeyCode::Char(c @ '1'..='8') => {
@@ -1019,12 +1053,6 @@ impl App {
             KeyCode::Char('x') => self.delete_selected(),
             KeyCode::Char('+') | KeyCode::Char('=') => self.scale(1),
             KeyCode::Char('-') => self.scale(-1),
-            KeyCode::Char('u') => {
-                if self.view == View::Volumes {
-                    self.status = "refreshing volume sizes…".into();
-                    self.fetch_volume_sizes();
-                }
-            }
             KeyCode::Char('A') => {
                 if self.view == View::Containers {
                     if let Some(it) = self.selected_item() {
@@ -1084,6 +1112,7 @@ impl App {
             KeyCode::Char(c) => {
                 self.filter.push(c);
                 self.selected = 0;
+                self.voffset = 0;
             }
             KeyCode::Backspace => {
                 self.filter.pop();
@@ -1153,12 +1182,22 @@ impl App {
                     self.log_follow = true;
                 }
             }
-            KeyCode::PageUp => {
+            KeyCode::Char('u') | KeyCode::PageUp => {
+                let step = if code == KeyCode::PageUp {
+                    self.page_size
+                } else {
+                    self.half_page()
+                };
                 self.log_follow = false;
-                self.log_scroll += 10;
+                self.log_scroll += step;
             }
-            KeyCode::PageDown => {
-                self.log_scroll = self.log_scroll.saturating_sub(10);
+            KeyCode::Char('d') | KeyCode::PageDown => {
+                let step = if code == KeyCode::PageDown {
+                    self.page_size
+                } else {
+                    self.half_page()
+                };
+                self.log_scroll = self.log_scroll.saturating_sub(step);
                 if self.log_scroll == 0 {
                     self.log_follow = true;
                 }
@@ -1191,8 +1230,14 @@ impl App {
             }
             KeyCode::Right => self.hscroll += HSTEP,
             KeyCode::Left => self.hscroll = self.hscroll.saturating_sub(HSTEP),
-            KeyCode::PageDown => self.inspect_scroll += 10,
-            KeyCode::PageUp => self.inspect_scroll = self.inspect_scroll.saturating_sub(10),
+            KeyCode::Char('d') => self.inspect_scroll += self.half_page(),
+            KeyCode::Char('u') => {
+                self.inspect_scroll = self.inspect_scroll.saturating_sub(self.half_page())
+            }
+            KeyCode::PageDown => self.inspect_scroll += self.page_size,
+            KeyCode::PageUp => {
+                self.inspect_scroll = self.inspect_scroll.saturating_sub(self.page_size)
+            }
             KeyCode::Char('g') | KeyCode::Home => self.inspect_scroll = 0,
             KeyCode::Char('G') | KeyCode::End => {
                 self.inspect_scroll = self.inspect_lines.len().saturating_sub(1)

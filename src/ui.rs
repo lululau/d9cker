@@ -197,35 +197,39 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     }))
     .height(1);
 
-    let rows = vis.iter().enumerate().map(|(row_i, &item_i)| {
-        let it = &app.items[item_i];
-        let selected = row_i == app.selected;
-        let mut style = if selected {
-            Style::default()
-                .bg(Color::Rgb(40, 44, 52))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        // dim non-running containers: keeps the running ones visually dominant
-        if !selected
-            && app.view == View::Containers
-            && it.cells.get(3).map(|s| s != "running").unwrap_or(false)
-        {
-            style = style.fg(Color::DarkGray);
-        }
-        let caps = app.view.col_max();
-        let cells = it.cells.iter().enumerate().map(|(ci, v)| {
-            let cap = caps.get(ci).copied().unwrap_or(30);
-            let mut cell = Cell::from(fit(v, cap));
-            // colorize the STATE-ish column
-            if let Some(color) = state_color(app.view, ci, v) {
-                cell = cell.style(Style::default().fg(color));
+    let rows = vis
+        .iter()
+        .enumerate()
+        .skip(app.voffset)
+        .map(|(row_i, &item_i)| {
+            let it = &app.items[item_i];
+            let selected = row_i == app.selected;
+            let mut style = if selected {
+                Style::default()
+                    .bg(Color::Rgb(40, 44, 52))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            // dim non-running containers: keeps the running ones visually dominant
+            if !selected
+                && app.view == View::Containers
+                && it.cells.get(3).map(|s| s != "running").unwrap_or(false)
+            {
+                style = style.fg(Color::DarkGray);
             }
-            cell
+            let caps = app.view.col_max();
+            let cells = it.cells.iter().enumerate().map(|(ci, v)| {
+                let cap = caps.get(ci).copied().unwrap_or(30);
+                let mut cell = Cell::from(fit(v, cap));
+                // colorize the STATE-ish column
+                if let Some(color) = state_color(app.view, ci, v) {
+                    cell = cell.style(Style::default().fg(color));
+                }
+                cell
+            });
+            Row::new(cells).style(style)
         });
-        Row::new(cells).style(style)
-    });
 
     // Frame first, then render the table off-screen at its *natural* width and
     // blit the horizontal window — so ←/→ reveals columns at full width instead
@@ -539,7 +543,7 @@ fn view_hint(view: View) -> &'static str {
         View::Images => "i inspect · x del · :prune",
         View::Services => "Enter tasks · l logs · i inspect · +/- scale",
         View::Nodes => "i inspect",
-        View::Volumes => "i inspect · x del · u sizes",
+        View::Volumes => "i inspect · x del · Ctrl-r refresh sizes",
         View::Networks => "i inspect · x del",
         View::Compose => "Enter containers · i view compose file · e edit compose file",
         View::Contexts => "Enter switch context",
@@ -555,6 +559,7 @@ fn render_help(f: &mut Frame, area: Rect) {
     let lines = vec![
         help_line("Navigation", ""),
         help_line("  j / k, ↓ / ↑", "move selection"),
+        help_line("  u / d", "half-page up / down  (PgUp/PgDn = full page)"),
         help_line("  g / G", "top / bottom"),
         help_line("  ← / →", "scroll horizontally (see truncated content)"),
         help_line("  h / l", "previous / next tab"),
@@ -585,7 +590,6 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  + / -", "scale service up / down (Services)"),
         help_line("  A", "attach to container (Ctrl-P Ctrl-Q to detach)"),
         help_line("  :prune", "prune dangling images"),
-        help_line("  u", "refresh volume sizes (Volumes)"),
         help_line("  Ctrl-r", "manual refresh current view (+ volume sizes)"),
         help_line("Logs / Inspect", ""),
         help_line("  f / w", "toggle follow / wrap (logs)"),

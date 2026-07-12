@@ -78,6 +78,11 @@ async fn run(
     ticker: &mut tokio::time::Interval,
 ) -> Result<()> {
     while !app.should_quit {
+        // keep u/d (half-page) honest about the real viewport:
+        // status(1) + tabs(2) + footer(1) + borders(2) = 6 rows of chrome
+        if let Ok(sz) = terminal.size() {
+            app.page_size = (sz.height as usize).saturating_sub(6).max(1);
+        }
         terminal.draw(|f| ui::render(f, app))?;
 
         tokio::select! {
