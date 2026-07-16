@@ -96,6 +96,12 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Magenta),
         ));
     }
+    if app.view == View::StackTasks && !app.drill_stack.is_empty() {
+        left.push(Span::styled(
+            format!("  › stack: {}", app.drill_stack),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
     if app.hscroll > 0 {
         left.push(Span::styled(
             format!("   →{}", app.hscroll),
@@ -144,7 +150,9 @@ fn render_tabs(f: &mut Frame, app: &App, area: Rect) {
         bot.push(Span::styled("──", dark));
         used += 2;
 
-        let active = app.view == v || (app.view == View::ServiceTasks && v == View::Services);
+        let active = app.view == v
+            || (app.view == View::ServiceTasks && v == View::Services)
+            || (app.view == View::StackTasks && v == View::Stacks);
         let label = if active && app.view == v {
             format!(" {} {} ", v.title(), app.items.len())
         } else {
@@ -209,6 +217,16 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         .map(|(row_i, &item_i)| {
             let it = &app.items[item_i];
             let selected = row_i == app.selected;
+            // service group heading (grouped stack-tasks view): one accented,
+            // non-selectable line — skip the per-cell colorize / dim logic
+            if it.header {
+                let caps = app.view.col_max();
+                let cells = it.cells.iter().enumerate().map(|(ci, v)| {
+                    Cell::from(fit(v, caps.get(ci).copied().unwrap_or(30)))
+                });
+                let style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+                return Row::new(cells).style(style);
+            }
             let mut style = if selected {
                 Style::default()
                     .bg(Color::Rgb(40, 44, 52))
@@ -277,6 +295,25 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
+
+    // Group-header rows span the whole width and stay pinned to the left,
+    // regardless of horizontal scroll — draw them over the blitted table.
+    let hdr_style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    for (i, &item_i) in vis.iter().enumerate().skip(app.voffset) {
+        if !app.items[item_i].header {
+            continue;
+        }
+        let row = (i - app.voffset) as u16; // 0-based data row (col titles are row 0)
+        if 1 + row >= inner.height {
+            break;
+        }
+        let y = inner.y + 1 + row;
+        for x in 0..inner.width {
+            dst[(inner.x + x, y)].reset();
+        }
+        let text = app.items[item_i].cells.first().cloned().unwrap_or_default();
+        dst.set_stringn(inner.x, y, text, inner.width as usize, hdr_style);
+    }
 }
 
 /// Width each column needs to show its content in full (capped so one giant
@@ -298,6 +335,11 @@ fn natural_widths(app: &App, vis: &[usize]) -> Vec<u16> {
     // start at the header width, grow to fit content, never exceed the cap
     let mut w: Vec<usize> = cols.iter().map(|c| c.chars().count()).collect();
     for &i in vis {
+        // group headers are drawn full-width over the table, not in columns —
+        // don't let their long text inflate a column's width
+        if app.items[i].header {
+            continue;
+        }
         for (ci, cell) in app.items[i].cells.iter().enumerate() {
             if ci < w.len() {
                 w[ci] = w[ci].max(cell.chars().count());
@@ -317,7 +359,7 @@ fn state_color(view: View, col: usize, v: &str) -> Option<Color> {
     use crate::docker::View::*;
     let is_state = matches!(
         (view, col),
-        (Containers, 3) | (Nodes, 1) | (ServiceTasks, 3)
+        (Containers, 3) | (Nodes, 2) | (ServiceTasks, 3) | (StackTasks, 4)
     );
     if !is_state {
         return None;
@@ -597,6 +639,8 @@ fn view_hint(view: View) -> &'static str {
         View::Compose => "Enter containers · p peek · i view compose file · e edit compose file",
         View::Contexts => "Enter switch context",
         View::ServiceTasks => "Esc back · l logs · i inspect",
+        View::Stacks => "Enter tasks",
+        View::StackTasks => "Esc back · Enter logs · i inspect",
     }) as _
 }
 
@@ -617,10 +661,10 @@ fn render_help(f: &mut Frame, area: Rect) {
             "next / prev tab — works from anywhere (exits / search)",
         ),
         help_line(
-            "  1..7",
-            "jump to Containers…Contexts (6 Volumes, 7 Networks)",
+            "  1..9",
+            "jump to a tab by position (Containers…Contexts)",
         ),
-        help_line("  : cmd", "co, im, svc, nodes, ctx, q  (jump to view)"),
+        help_line("  : cmd", "co, im, svc, stacks, nodes, ctx, q  (jump to view)"),
         help_line("  /", "filter rows   (Esc clears)"),
         help_line("  o / O", "cycle sort column / reverse direction"),
         help_line(

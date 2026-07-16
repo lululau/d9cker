@@ -77,8 +77,7 @@ dependencies = [
 [[package]]
 name = "bollard-stubs"
 version = "1.53.1-rc.29.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce412eb6f7096743011dc3cb5c674caeb24ced61d8c498fe07cf7998a4fea889"
+source = "git+https://github.com/loyalpartner/bollard.git?branch=task-networks-attachments#5fe64ce2277004b9fc0dffb36beb09d42b609e25"
 dependencies = [
  "serde",
  "serde_json",

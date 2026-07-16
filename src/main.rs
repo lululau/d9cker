@@ -143,6 +143,7 @@ async fn smoke() -> Result<()> {
         docker::View::Containers,
         docker::View::Images,
         docker::View::Services,
+        docker::View::Stacks,
         docker::View::Nodes,
         docker::View::Volumes,
         docker::View::Networks,
@@ -163,6 +164,17 @@ async fn smoke() -> Result<()> {
         if let Some(first) = svcs.first() {
             let tasks = docker::list(&docker, docker::View::ServiceTasks, &first.name).await?;
             println!("\ntasks of {} ({}):", first.name, tasks.len());
+            for t in tasks.iter().take(3) {
+                println!("  {}", t.cells.join(" | "));
+            }
+        }
+    }
+
+    // drill into the first stack's tasks, if any
+    if let Ok(stacks) = docker::list(&docker, docker::View::Stacks, "").await {
+        if let Some(first) = stacks.first() {
+            let tasks = docker::list(&docker, docker::View::StackTasks, &first.name).await?;
+            println!("\ntasks of stack {} ({}):", first.name, tasks.len());
             for t in tasks.iter().take(3) {
                 println!("  {}", t.cells.join(" | "));
             }

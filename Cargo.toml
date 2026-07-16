@@ -20,3 +20,9 @@ libc = "0.2"
 [profile.release]
 strip = true
 lto = true
+
+# bollard's typed Task drops the swarm /tasks API's NetworksAttachments (moby's
+# swagger only lists it in examples, so codegen skips it). This fork adds the
+# field back so we can read per-task overlay IPs cluster-wide. See upstream PR.
+[patch.crates-io]
+bollard-stubs = { git = "https://github.com/loyalpartner/bollard.git", branch = "task-networks-attachments" }

@@ -35,6 +35,8 @@ pub enum View {
     Volumes,
     Networks,
     Compose,
+    Stacks,
+    StackTasks,
 }
 
 impl View {
@@ -49,6 +51,8 @@ impl View {
             View::Volumes => "Volumes",
             View::Networks => "Networks",
             View::Compose => "Compose",
+            View::Stacks => "Stacks",
+            View::StackTasks => "Stack Tasks",
         }
     }
 
@@ -57,12 +61,14 @@ impl View {
             View::Containers => &["ID", "NAME", "IMAGE", "STATE", "STATUS", "IP", "PORTS"],
             View::Images => &["REPOSITORY", "TAG", "ID", "SIZE", "CREATED"],
             View::Services => &["NAME", "MODE", "REPLICAS", "IMAGE", "PORTS"],
-            View::Nodes => &["HOSTNAME", "STATUS", "AVAILABILITY", "MANAGER", "ENGINE"],
+            View::Nodes => &["HOSTNAME", "IP", "STATUS", "AVAILABILITY", "MANAGER", "ENGINE"],
             View::Contexts => &["", "NAME", "DESCRIPTION", "ENDPOINT"],
             View::ServiceTasks => &["NAME", "NODE", "DESIRED", "CURRENT", "IMAGE", "ERROR"],
             View::Volumes => &["NAME", "DRIVER", "SIZE", "SCOPE", "MOUNTPOINT"],
             View::Networks => &["NAME", "DRIVER", "SCOPE", "SUBNET", "ID"],
             View::Compose => &["PROJECT", "STATUS", "CONTAINERS", "CONFIG FILES"],
+            View::Stacks => &["NAME", "SERVICES", "ORCHESTRATOR"],
+            View::StackTasks => &["NAME", "NODE", "IP", "DESIRED", "CURRENT", "ERROR"],
         }
     }
 
@@ -74,12 +80,14 @@ impl View {
             View::Containers => &[12, 32, 34, 9, 22, 16, 26],
             View::Images => &[40, 18, 14, 9, 8],
             View::Services => &[32, 11, 9, 34, 18],
-            View::Nodes => &[20, 9, 13, 10, 9],
+            View::Nodes => &[20, 16, 9, 13, 10, 9],
             View::Contexts => &[2, 12, 26, 44],
             View::ServiceTasks => &[32, 14, 10, 12, 30, 28],
             View::Volumes => &[30, 8, 9, 7, 46],
             View::Networks => &[26, 10, 7, 18, 14],
             View::Compose => &[24, 12, 11, 52],
+            View::Stacks => &[32, 9, 13],
+            View::StackTasks => &[40, 14, 16, 10, 12, 28],
         }
     }
 
@@ -89,6 +97,8 @@ impl View {
             View::Images => Some("image"),
             View::Services => Some("service"),
             View::Nodes => Some("node"),
+            // a stack task's row id is its container id, so inspect the container
+            View::StackTasks => Some("container"),
             View::Volumes => Some("volume"),
             View::Networks => Some("network"),
             _ => None,
@@ -97,11 +107,14 @@ impl View {
 }
 
 /// One row in a resource table.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Item {
     pub id: String,
     pub name: String,
     pub cells: Vec<String>,
+    /// A non-selectable group header row (e.g. a service heading in the grouped
+    /// stack-tasks view), not a real resource.
+    pub header: bool,
 }
 
 // ---- helpers -----------------------------------------------------------
@@ -226,82 +239,242 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         ip,
                         ports,
                     ];
-                    Item { id, name, cells }
+                    Item { id, name, cells, ..Default::default() }
                 })
                 .collect()
         }
         View::Images => {
+            // grouped by repository namespace (the path before the last '/'):
+            // a header per namespace, its images indented underneath
             let opts = ListImagesOptionsBuilder::default().build();
-            docker
-                .list_images(Some(opts))
-                .await?
-                .into_iter()
-                .map(|im| {
-                    let id = im.id;
-                    let (repo, tag) = im
-                        .repo_tags
-                        .first()
-                        .and_then(|rt| rt.rsplit_once(':'))
-                        .map(|(r, t)| (r.to_string(), t.to_string()))
-                        .unwrap_or_else(|| ("<none>".into(), "<none>".into()));
-                    let cells = vec![
-                        repo.clone(),
-                        tag.clone(),
-                        short(&id),
-                        human_size(im.size),
-                        fmt_age(im.created),
-                    ];
-                    Item {
-                        id,
-                        name: format!("{repo}:{tag}"),
-                        cells,
-                    }
-                })
-                .collect()
+            let imgs = docker.list_images(Some(opts)).await?;
+
+            struct Row {
+                name: String,
+                tag: String,
+                id: String,
+                size: String,
+                created: String,
+            }
+            let mut groups: std::collections::BTreeMap<String, Vec<Row>> =
+                std::collections::BTreeMap::new();
+            for im in imgs {
+                let (repo, tag) = im
+                    .repo_tags
+                    .first()
+                    .and_then(|rt| rt.rsplit_once(':'))
+                    .map(|(r, t)| (r.to_string(), t.to_string()))
+                    .unwrap_or_else(|| ("<none>".into(), "<none>".into()));
+                let (group, short_name) = if repo == "<none>" {
+                    ("(untagged)".to_string(), "<none>".to_string())
+                } else if let Some((ns, name)) = repo.rsplit_once('/') {
+                    (ns.to_string(), name.to_string())
+                } else {
+                    ("(top-level)".to_string(), repo.clone())
+                };
+                groups.entry(group).or_default().push(Row {
+                    name: short_name,
+                    tag,
+                    id: im.id,
+                    size: human_size(im.size),
+                    created: fmt_age(im.created),
+                });
+            }
+
+            let mut items = Vec::new();
+            for (group, mut rows) in groups {
+                rows.sort_by(|a, b| a.name.cmp(&b.name).then(a.tag.cmp(&b.tag)));
+                items.push(Item {
+                    cells: vec![
+                        format!("{group}  ({})", rows.len()),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                    ],
+                    name: group,
+                    header: true,
+                    ..Default::default()
+                });
+                for r in rows {
+                    items.push(Item {
+                        name: format!("{}:{}", r.name, r.tag),
+                        cells: vec![
+                            format!("  {}", r.name),
+                            r.tag,
+                            short(&r.id),
+                            r.size,
+                            r.created,
+                        ],
+                        id: r.id,
+                        ..Default::default()
+                    });
+                }
+            }
+            items
         }
         View::Services => {
             let svcs = docker.list_services(None::<ListServicesOptions>).await?;
-            svcs.into_iter()
-                .map(|s| {
-                    let id = s.id.clone().unwrap_or_default();
-                    let spec = s.spec.as_ref();
-                    let name = spec.and_then(|sp| sp.name.clone()).unwrap_or_default();
-                    let mode = spec.and_then(|sp| sp.mode.as_ref());
-                    let (mode_str, replicas) = match mode {
-                        Some(m) if m.replicated.is_some() => (
-                            "replicated".to_string(),
-                            m.replicated
-                                .as_ref()
-                                .and_then(|r| r.replicas)
-                                .map(|n| n.to_string())
-                                .unwrap_or_default(),
-                        ),
-                        Some(m) if m.global.is_some() => ("global".to_string(), "-".to_string()),
-                        _ => (String::new(), String::new()),
-                    };
-                    let image = spec
-                        .and_then(|sp| sp.task_template.as_ref())
-                        .and_then(|tt| tt.container_spec.as_ref())
-                        .and_then(|cs| cs.image.clone())
-                        .map(|i| clean_image(&i))
-                        .unwrap_or_default();
-                    let ports = s
-                        .endpoint
-                        .as_ref()
-                        .and_then(|e| e.ports.as_ref())
-                        .map(|ps| {
-                            ps.iter()
-                                .filter_map(|p| {
-                                    p.published_port.map(|pub_p| {
-                                        format!("{}:{}", pub_p, p.target_port.unwrap_or(0))
-                                    })
-                                })
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .unwrap_or_default();
-                    let cells = vec![name.clone(), mode_str, replicas, image, ports];
-                    Item { id, name, cells }
+            svcs.iter().map(service_item).collect()
+        }
+        View::StackTasks => {
+            // `docker stack ps <name>`, grouped by service: a header row per
+            // service followed by its task instances (indented). Task IP comes
+            // from the manager's own NetworksAttachments (cluster-wide), with the
+            // ingress subnet filtered out.
+            let mut filters: HashMap<String, Vec<String>> = HashMap::new();
+            filters.insert(
+                "label".to_string(),
+                vec![format!("com.docker.stack.namespace={arg}")],
+            );
+            let opts = ListTasksOptionsBuilder::default().filters(&filters).build();
+            let tasks = docker.list_tasks(Some(opts)).await?;
+            let nodes = node_hostnames(docker).await;
+            let svc_meta = service_meta(docker).await;
+            let cips = container_ips(docker).await;
+            let ingress = ingress_subnets(docker).await;
+
+            struct Row {
+                name: String,
+                node: String,
+                ip: String,
+                desired: String,
+                current: String,
+                err: String,
+                id: String,
+                slot: i64,
+            }
+            // group tasks by service (BTreeMap keeps services in name order)
+            let mut groups: std::collections::BTreeMap<String, (String, String, Vec<Row>)> =
+                std::collections::BTreeMap::new();
+            for t in tasks {
+                let tid = t.id.clone().unwrap_or_default();
+                let node_id = t.node_id.clone().unwrap_or_default();
+                let slot_num = t.slot.unwrap_or(0);
+                let slot = t.slot.map(|n| n.to_string()).unwrap_or_default();
+                let sid = t.service_id.clone().unwrap_or_default();
+                let (svc, mode, declared) = svc_meta.get(&sid).cloned().unwrap_or_default();
+                let svc_key = if svc.is_empty() { short(&sid) } else { svc.clone() };
+                // bollard leaves Task.name empty; rebuild service.slot (or
+                // service.node for global-mode tasks that have no slot)
+                let name = t.name.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| {
+                    if svc.is_empty() {
+                        short(&tid)
+                    } else if !slot.is_empty() {
+                        format!("{svc}.{slot}")
+                    } else {
+                        format!("{svc}.{}", short(&node_id))
+                    }
+                });
+                let node = nodes
+                    .get(&node_id)
+                    .cloned()
+                    .unwrap_or_else(|| short(&node_id));
+                let cont = t
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.container_status.as_ref())
+                    .and_then(|cs| cs.container_id.clone())
+                    .unwrap_or_default();
+                // authoritative source = the task's own NetworksAttachments;
+                // fall back to the local container map (host-net / edge cases)
+                let mut ip = task_ip(&t, &ingress);
+                if ip.is_empty() {
+                    ip = cips.get(&cont).cloned().unwrap_or_default();
+                }
+                let desired = opt_estr(&t.desired_state);
+                let (current, err) = t
+                    .status
+                    .as_ref()
+                    .map(|s| (opt_estr(&s.state), s.err.clone().unwrap_or_default()))
+                    .unwrap_or_default();
+                // row id = container id so `i`/`l` target the real container
+                let id = if cont.is_empty() { tid } else { cont };
+                let entry = groups
+                    .entry(svc_key)
+                    .or_insert_with(|| (mode, declared, Vec::new()));
+                entry.2.push(Row {
+                    name,
+                    node,
+                    ip,
+                    desired,
+                    current,
+                    err,
+                    id,
+                    slot: slot_num,
+                });
+            }
+
+            // service/task names carry the stack prefix (`stack_svc`); strip it —
+            // the stack is already the context we're inside.
+            let pfx = format!("{arg}_");
+            let strip = |s: &str| s.strip_prefix(&pfx).unwrap_or(s).to_string();
+            let mut items = Vec::new();
+            for (svc, (mode, declared, mut rows)) in groups {
+                // running tasks first, then by slot
+                rows.sort_by(|a, b| {
+                    let (ar, br) = (a.current == "running", b.current == "running");
+                    br.cmp(&ar).then(a.slot.cmp(&b.slot))
+                });
+                let running = rows.iter().filter(|r| r.current == "running").count();
+                let summary = if !declared.is_empty() {
+                    format!("{mode} {running}/{declared}")
+                } else if !mode.is_empty() {
+                    format!("{mode} {running}")
+                } else {
+                    format!("{running} running")
+                };
+                items.push(Item {
+                    name: svc.clone(),
+                    cells: vec![
+                        format!("{}  ({summary})", strip(&svc)),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                        String::new(),
+                    ],
+                    header: true,
+                    ..Default::default()
+                });
+                for r in rows {
+                    items.push(Item {
+                        id: r.id,
+                        cells: vec![
+                            format!("  {}", strip(&r.name)),
+                            r.node,
+                            r.ip,
+                            r.desired,
+                            r.current,
+                            r.err,
+                        ],
+                        name: r.name,
+                        ..Default::default()
+                    });
+                }
+            }
+            items
+        }
+        View::Stacks => {
+            // The Engine has no stack object — `docker stack ls` groups services
+            // client-side by the com.docker.stack.namespace label. We do the same.
+            let svcs = docker.list_services(None::<ListServicesOptions>).await?;
+            let mut map: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            for s in &svcs {
+                if let Some(ns) = stack_namespace(s) {
+                    *map.entry(ns).or_insert(0) += 1;
+                }
+            }
+            map.into_iter()
+                .map(|(name, count)| {
+                    let cells = vec![name.clone(), count.to_string(), "Swarm".to_string()];
+                    Item {
+                        id: name.clone(),
+                        name,
+                        cells,
+                        ..Default::default()
+                    }
                 })
                 .collect()
         }
@@ -313,6 +486,11 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                     let id = n.id.clone().unwrap_or_default();
                     let desc = n.description.as_ref();
                     let host = desc.and_then(|d| d.hostname.clone()).unwrap_or_default();
+                    let addr = n
+                        .status
+                        .as_ref()
+                        .and_then(|s| s.addr.clone())
+                        .unwrap_or_default();
                     let status = n
                         .status
                         .as_ref()
@@ -332,11 +510,12 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         .and_then(|d| d.engine.as_ref())
                         .and_then(|e| e.engine_version.clone())
                         .unwrap_or_default();
-                    let cells = vec![host.clone(), status, avail, manager, engine];
+                    let cells = vec![host.clone(), addr, status, avail, manager, engine];
                     Item {
                         id,
                         name: host,
                         cells,
+                        ..Default::default()
                     }
                 })
                 .collect()
@@ -379,7 +558,7 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         .map(|i| clean_image(&i))
                         .unwrap_or_default();
                     let cells = vec![name.clone(), node, desired, current, image, err];
-                    Item { id, name, cells }
+                    Item { id, name, cells, ..Default::default() }
                 })
                 .collect()
         }
@@ -401,6 +580,7 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         id: v.name.clone(),
                         name: v.name,
                         cells,
+                        ..Default::default()
                     }
                 })
                 .collect()
@@ -429,7 +609,7 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         subnet,
                         short(&id),
                     ];
-                    Item { id, name, cells }
+                    Item { id, name, cells, ..Default::default() }
                 })
                 .collect()
         }
@@ -472,6 +652,7 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                         id: name.clone(),
                         name,
                         cells,
+                        ..Default::default()
                     }
                 })
                 .collect()
@@ -494,11 +675,66 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                     id: c.name.clone(),
                     name: c.name,
                     cells,
+                    ..Default::default()
                 }
             })
             .collect(),
     };
     Ok(items)
+}
+
+/// The swarm stack namespace a service belongs to, if any
+/// (`com.docker.stack.namespace` label).
+fn stack_namespace(s: &bollard::models::Service) -> Option<String> {
+    s.spec
+        .as_ref()
+        .and_then(|sp| sp.labels.as_ref())
+        .and_then(|l| l.get("com.docker.stack.namespace"))
+        .filter(|v| !v.is_empty())
+        .cloned()
+}
+
+/// Build a service table row: NAME, MODE, REPLICAS, IMAGE, PORTS.
+/// Shared by the Services and StackServices views.
+fn service_item(s: &bollard::models::Service) -> Item {
+    let id = s.id.clone().unwrap_or_default();
+    let spec = s.spec.as_ref();
+    let name = spec.and_then(|sp| sp.name.clone()).unwrap_or_default();
+    let mode = spec.and_then(|sp| sp.mode.as_ref());
+    let (mode_str, replicas) = match mode {
+        Some(m) if m.replicated.is_some() => (
+            "replicated".to_string(),
+            m.replicated
+                .as_ref()
+                .and_then(|r| r.replicas)
+                .map(|n| n.to_string())
+                .unwrap_or_default(),
+        ),
+        Some(m) if m.global.is_some() => ("global".to_string(), "-".to_string()),
+        _ => (String::new(), String::new()),
+    };
+    let image = spec
+        .and_then(|sp| sp.task_template.as_ref())
+        .and_then(|tt| tt.container_spec.as_ref())
+        .and_then(|cs| cs.image.clone())
+        .map(|i| clean_image(&i))
+        .unwrap_or_default();
+    let ports = s
+        .endpoint
+        .as_ref()
+        .and_then(|e| e.ports.as_ref())
+        .map(|ps| {
+            ps.iter()
+                .filter_map(|p| {
+                    p.published_port
+                        .map(|pub_p| format!("{}:{}", pub_p, p.target_port.unwrap_or(0)))
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let cells = vec![name.clone(), mode_str, replicas, image, ports];
+    Item { id, name, cells, ..Default::default() }
 }
 
 fn fmt_ports(ports: &Option<Vec<bollard::models::PortSummary>>) -> String {
@@ -542,6 +778,144 @@ pub async fn volume_sizes(docker: &Docker) -> std::collections::HashMap<String, 
         }
     }
     m
+}
+
+/// Map swarm service ids to (name, mode, declared-replicas) — for rebuilding
+/// task names and the per-service header in the grouped stack-tasks view.
+async fn service_meta(docker: &Docker) -> HashMap<String, (String, String, String)> {
+    let mut m = HashMap::new();
+    if let Ok(svcs) = docker.list_services(None::<ListServicesOptions>).await {
+        for s in svcs {
+            let id = s.id.clone().unwrap_or_default();
+            if id.is_empty() {
+                continue;
+            }
+            let spec = s.spec.as_ref();
+            let name = spec.and_then(|sp| sp.name.clone()).unwrap_or_default();
+            let mode = spec.and_then(|sp| sp.mode.as_ref());
+            let (mode_str, declared) = match mode {
+                Some(m) if m.replicated.is_some() => (
+                    "replicated".to_string(),
+                    m.replicated
+                        .as_ref()
+                        .and_then(|r| r.replicas)
+                        .map(|n| n.to_string())
+                        .unwrap_or_default(),
+                ),
+                Some(m) if m.global.is_some() => ("global".to_string(), String::new()),
+                _ => (String::new(), String::new()),
+            };
+            m.insert(id, (name, mode_str, declared));
+        }
+    }
+    m
+}
+
+/// Map container id -> its IP(s), for joining swarm tasks to overlay addresses.
+/// Only containers on the connected daemon are visible, so tasks scheduled on
+/// other swarm nodes come back without an IP (the column is left blank).
+async fn container_ips(docker: &Docker) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    let opts = ListContainersOptionsBuilder::default().all(true).build();
+    if let Ok(cs) = docker.list_containers(Some(opts)).await {
+        for c in cs {
+            let Some(id) = c.id else { continue };
+            let ip = c
+                .network_settings
+                .as_ref()
+                .and_then(|ns| ns.networks.as_ref())
+                .map(|nets| {
+                    let mut ips: Vec<String> = nets
+                        .values()
+                        .filter_map(|e| e.ip_address.clone())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    ips.sort();
+                    ips.dedup();
+                    ips.join(", ")
+                })
+                .unwrap_or_default();
+            if !ip.is_empty() {
+                m.insert(id, ip);
+            }
+        }
+    }
+    m
+}
+
+fn ipv4_to_u32(s: &str) -> Option<u32> {
+    let mut it = s.split('.');
+    let mut v: u32 = 0;
+    for _ in 0..4 {
+        let o: u32 = it.next()?.trim().parse().ok()?;
+        if o > 255 {
+            return None;
+        }
+        v = (v << 8) | o;
+    }
+    if it.next().is_some() {
+        return None;
+    }
+    Some(v)
+}
+
+/// Parse an IPv4 CIDR "10.250.0.0/24" into (network_base, mask).
+fn parse_cidr_v4(s: &str) -> Option<(u32, u32)> {
+    let (ip, pfx) = s.split_once('/')?;
+    let base = ipv4_to_u32(ip)?;
+    let bits: u32 = pfx.trim().parse().ok()?;
+    if bits > 32 {
+        return None;
+    }
+    let mask = if bits == 0 { 0 } else { u32::MAX << (32 - bits) };
+    Some((base & mask, mask))
+}
+
+fn ipv4_in_any(ip: &str, subnets: &[(u32, u32)]) -> bool {
+    match ipv4_to_u32(ip) {
+        Some(v) => subnets.iter().any(|&(base, mask)| (v & mask) == base),
+        None => false,
+    }
+}
+
+/// Subnets of the swarm ingress (routing-mesh) network(s). Used to drop the
+/// ingress IP from a task's address list so we show the real overlay IP.
+async fn ingress_subnets(docker: &Docker) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    if let Ok(nets) = docker.list_networks(None::<ListNetworksOptions>).await {
+        for n in nets {
+            let is_ingress = n.ingress == Some(true) || n.name.as_deref() == Some("ingress");
+            if !is_ingress {
+                continue;
+            }
+            if let Some(cfgs) = n.ipam.and_then(|i| i.config) {
+                for c in cfgs {
+                    if let Some(sn) = c.subnet.and_then(|s| parse_cidr_v4(&s)) {
+                        out.push(sn);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A task's overlay IP(s), read from the swarm manager's own record
+/// (`NetworksAttachments`, assigned via IPAM). Works cluster-wide — no need to
+/// reach the container's node. `ingress` subnets are dropped (routing mesh, not
+/// the task's real IP). Bare IPs, no CIDR mask.
+fn task_ip(t: &bollard::models::Task, ingress: &[(u32, u32)]) -> String {
+    t.networks_attachments
+        .as_ref()
+        .map(|nas| {
+            nas.iter()
+                .flat_map(|na| na.addresses.clone().unwrap_or_default())
+                .map(|a| a.split('/').next().unwrap_or(&a).to_string())
+                .filter(|s| !s.is_empty() && !ipv4_in_any(s, ingress))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
 }
 
 /// Map swarm node ids to hostnames (for the service-tasks NODE column).

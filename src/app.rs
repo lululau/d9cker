@@ -15,10 +15,11 @@ const LOG_CAP: usize = 5000;
 const HSTEP: usize = 8;
 
 /// The tab order for h/l navigation and the header tab bar.
-pub const TABS: [View; 8] = [
+pub const TABS: [View; 9] = [
     View::Containers,
     View::Compose,
     View::Services,
+    View::Stacks,
     View::Nodes,
     View::Images,
     View::Volumes,
@@ -137,6 +138,7 @@ pub struct App {
     pub confirm: Option<Confirm>,
 
     pub drill_service: String,
+    pub drill_stack: String,
     prev_view: View,
 
     /// visible content rows, refreshed each frame from the terminal size
@@ -197,6 +199,7 @@ impl App {
             commanding: false,
             confirm: None,
             drill_service: String::new(),
+            drill_stack: String::new(),
             prev_view: View::Containers,
             page_size: 20,
             voffset: 0,
@@ -231,6 +234,7 @@ impl App {
         match self.view {
             View::Contexts => self.context.clone(),
             View::ServiceTasks => self.drill_service.clone(),
+            View::StackTasks => self.drill_stack.clone(),
             View::Containers if self.show_all => "all".to_string(),
             _ => String::new(),
         }
@@ -319,6 +323,7 @@ impl App {
                                 .iter()
                                 .position(|&i| self.items[i].id == id)
                                 .unwrap_or_else(|| self.selected.min(vis.len().saturating_sub(1)));
+                            self.snap_off_header();
                             self.ensure_visible();
                         }
                         None => self.clamp_selection(),
@@ -335,7 +340,14 @@ impl App {
                 }
                 // context has no swarm: don't strand the user on a swarm-only view
                 if self.swarm != "active"
-                    && matches!(self.view, View::Services | View::Nodes | View::ServiceTasks)
+                    && matches!(
+                        self.view,
+                        View::Services
+                            | View::Nodes
+                            | View::ServiceTasks
+                            | View::Stacks
+                            | View::StackTasks
+                    )
                 {
                     self.switch_view(View::Containers);
                 }
@@ -432,6 +444,7 @@ impl App {
         }
         let max_off = n.saturating_sub(self.page_size.max(1));
         self.voffset = self.voffset.min(max_off);
+        self.snap_off_header();
         self.ensure_visible();
     }
 
@@ -442,13 +455,56 @@ impl App {
     }
 
     fn move_sel(&mut self, delta: isize) {
-        let n = self.visible_indices().len();
+        let vis = self.visible_indices();
+        let n = vis.len();
         if n == 0 {
             return;
         }
-        let next = (self.selected as isize + delta).clamp(0, n as isize - 1);
-        self.selected = next as usize;
-        self.ensure_visible();
+        let dir = if delta >= 0 { 1 } else { -1 };
+        let mut pos = (self.selected as isize + delta).clamp(0, n as isize - 1);
+        // step over non-selectable group headers in the direction of travel
+        let is_hdr = |p: isize| self.items[vis[p as usize]].header;
+        while (0..n as isize).contains(&pos) && is_hdr(pos) {
+            pos += dir;
+        }
+        if !(0..n as isize).contains(&pos) {
+            // ran off the edge onto headers — back off the other way
+            pos = (self.selected as isize + delta).clamp(0, n as isize - 1);
+            while (0..n as isize).contains(&pos) && is_hdr(pos) {
+                pos -= dir;
+            }
+        }
+        if (0..n as isize).contains(&pos) {
+            self.selected = pos as usize;
+            self.ensure_visible();
+        }
+    }
+
+    /// Move `selected` off a group-header row (headers aren't selectable):
+    /// search forward from the current row, then backward.
+    fn snap_off_header(&mut self) {
+        let vis = self.visible_indices();
+        let n = vis.len();
+        if n == 0 {
+            return;
+        }
+        let start = self.selected.min(n - 1);
+        if !self.items[vis[start]].header {
+            self.selected = start;
+            return;
+        }
+        for (p, &i) in vis.iter().enumerate().skip(start) {
+            if !self.items[i].header {
+                self.selected = p;
+                return;
+            }
+        }
+        for (p, &i) in vis.iter().enumerate().take(start).rev() {
+            if !self.items[i].header {
+                self.selected = p;
+                return;
+            }
+        }
     }
 
     // ---- navigation ----------------------------------------------------
@@ -481,6 +537,24 @@ impl App {
             self.sort_col = None;
             self.sort_desc = false;
             self.status = format!("tasks of {}", self.drill_service);
+            self.refresh();
+        }
+    }
+
+    /// Drill from a stack into the services that make it up
+    /// (`docker stack services <name>`).
+    fn drill_into_stack(&mut self) {
+        if let Some(it) = self.selected_item() {
+            self.drill_stack = it.name.clone();
+            self.prev_view = self.view;
+            self.view = View::StackTasks;
+            self.selected = 0;
+            self.items.clear();
+            self.filter.clear();
+            self.filtering = false;
+            self.sort_col = None;
+            self.sort_desc = false;
+            self.status = format!("services of {}", self.drill_stack);
             self.refresh();
         }
     }
@@ -527,7 +601,7 @@ impl App {
     fn start_logs(&mut self) {
         if !matches!(
             self.view,
-            View::Containers | View::Services | View::ServiceTasks
+            View::Containers | View::Services | View::ServiceTasks | View::StackTasks
         ) {
             self.status = "logs: select a container or service".into();
             return;
@@ -851,7 +925,7 @@ impl App {
         TABS.iter()
             .copied()
             .filter(|v| match v {
-                View::Services | View::Nodes => swarm,
+                View::Services | View::Nodes | View::Stacks => swarm,
                 View::Compose => compose,
                 _ => true,
             })
@@ -863,11 +937,13 @@ impl App {
         tabs.iter()
             .position(|v| *v == self.view)
             .unwrap_or_else(|| {
-                if self.view == View::ServiceTasks {
-                    tabs.iter().position(|v| *v == View::Services).unwrap_or(0)
-                } else {
-                    0
-                }
+                // drill-down views highlight the tab they descend from
+                let parent = match self.view {
+                    View::ServiceTasks => View::Services,
+                    View::StackTasks => View::Stacks,
+                    _ => return 0,
+                };
+                tabs.iter().position(|v| *v == parent).unwrap_or(0)
             })
     }
 
@@ -893,6 +969,12 @@ impl App {
     }
 
     fn cycle_sort(&mut self) {
+        // grouped views (headers + members) have a fixed ordering; sorting would
+        // scramble the groups, so it's disabled whenever headers are present
+        if self.items.iter().any(|it| it.header) {
+            self.status = "sort disabled in grouped view".into();
+            return;
+        }
         let ncols = self.view.columns().len();
         self.sort_col = match self.sort_col {
             None => Some(0),
@@ -1002,13 +1084,15 @@ impl App {
             KeyCode::Char('g') | KeyCode::Home => {
                 self.selected = 0;
                 self.voffset = 0;
+                self.snap_off_header();
             }
             KeyCode::Char('G') | KeyCode::End => {
                 self.selected = self.visible_indices().len().saturating_sub(1);
+                self.snap_off_header();
                 self.ensure_visible();
             }
             // digit keys follow the tab-bar order (TABS) so they always match
-            KeyCode::Char(c @ '1'..='8') => {
+            KeyCode::Char(c @ '1'..='9') => {
                 let tabs = self.tabs();
                 if let Some(&v) = tabs.get(c as usize - '1' as usize) {
                     self.switch_view(v);
@@ -1025,8 +1109,9 @@ impl App {
             KeyCode::Enter => match self.view {
                 View::Compose => self.open_compose_project(),
                 View::Contexts => self.switch_context(),
+                View::Stacks => self.drill_into_stack(),
                 View::Services => self.drill_into_service(),
-                View::Containers | View::ServiceTasks => self.start_logs(),
+                View::Containers | View::ServiceTasks | View::StackTasks => self.start_logs(),
                 _ => {}
             },
             // h / l switch tabs (vim-style); ←/→ scroll the table horizontally
@@ -1075,7 +1160,7 @@ impl App {
             KeyCode::Char('o') => self.cycle_sort(),
             KeyCode::Char('O') => self.sort_desc = !self.sort_desc,
             KeyCode::Esc => {
-                if self.view == View::ServiceTasks {
+                if matches!(self.view, View::ServiceTasks | View::StackTasks) {
                     self.switch_view(self.prev_view);
                 } else if !self.filter.is_empty() {
                     self.filter.clear();
@@ -1111,6 +1196,7 @@ impl App {
             "im" | "image" | "images" => self.switch_view(View::Images),
             "svc" | "service" | "services" => self.switch_view(View::Services),
             "no" | "node" | "nodes" => self.switch_view(View::Nodes),
+            "st" | "stack" | "stacks" => self.switch_view(View::Stacks),
             "ctx" | "context" | "contexts" => self.switch_view(View::Contexts),
             "q" | "quit" => self.should_quit = true,
             "prune" => self.request_prune(),
