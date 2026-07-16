@@ -21,8 +21,20 @@ libc = "0.2"
 strip = true
 lto = true
 
-# bollard's typed Task drops the swarm /tasks API's NetworksAttachments (moby's
-# swagger only lists it in examples, so codegen skips it). This fork adds the
-# field back so we can read per-task overlay IPs cluster-wide. See upstream PR.
+# UPSTREAM WORKAROUND — remove once fixed upstream and a new bollard ships.
+#
+# bollard's typed `Task` drops the swarm `/tasks` API's `NetworksAttachments`
+# field, so per-task overlay IPs are unavailable. Root cause is moby's swagger:
+# it never declares `NetworksAttachments` as a `Task` property (only shows it in
+# examples), even though moby's own Go type `swarm.Task` has it — so the
+# generated bollard-stubs omit it.
+#
+#   moby fix (swagger):  https://github.com/moby/moby/pull/53082
+#   stub fork with field: loyalpartner/bollard @ task-networks-attachments
+#
+# This patch points bollard-stubs at that fork. Once moby#53082 merges and a
+# bollard release regenerates from the fixed spec, delete this block and bump
+# bollard. NOTE: a `[patch]` can't be published to crates.io and requires
+# network to fetch the git dep at build time (fine for the binary / AUR build).
 [patch.crates-io]
 bollard-stubs = { git = "https://github.com/loyalpartner/bollard.git", branch = "task-networks-attachments" }
