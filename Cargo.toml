@@ -21,20 +21,26 @@ libc = "0.2"
 strip = true
 lto = true
 
-# UPSTREAM WORKAROUND — remove once fixed upstream and a new bollard ships.
+# UPSTREAM WORKAROUND — now blocked only on bollard regenerating its stubs.
 #
 # bollard's typed `Task` drops the swarm `/tasks` API's `NetworksAttachments`
-# field, so per-task overlay IPs are unavailable. Root cause is moby's swagger:
-# it never declares `NetworksAttachments` as a `Task` property (only shows it in
-# examples), even though moby's own Go type `swarm.Task` has it — so the
+# field, so per-task overlay IPs are unavailable. Root cause was moby's swagger:
+# it never declared `NetworksAttachments` as a `Task` property (only showed it
+# in examples), even though moby's own Go type `swarm.Task` has it — so the
 # generated bollard-stubs omit it.
 #
-#   moby fix (swagger):  https://github.com/moby/moby/pull/53082
+#   moby fix (swagger):   https://github.com/moby/moby/pull/53082  [MERGED]
+#   released in moby:     docker-v29.7.0 and later
 #   stub fork with field: loyalpartner/bollard @ task-networks-attachments
 #
-# This patch points bollard-stubs at that fork. Once moby#53082 merges and a
-# bollard release regenerates from the fixed spec, delete this block and bump
-# bollard. NOTE: a `[patch]` can't be published to crates.io and requires
-# network to fetch the git dep at build time (fine for the binary / AUR build).
+# Remaining blocker: bollard's codegen pins an older spec snapshot
+# (codegen/swagger/pom.xml -> moby docker-v29.4.1/api/docs/v1.53.yaml), so the
+# published bollard-stubs (1.53.1-rc.29.3.1) still lack the field. Once bollard
+# bumps that inputSpec to docker-v29.7.0+ and releases, delete this block and
+# bump bollard — we only read `task.networks_attachments[].addresses`, which the
+# regenerated stub will provide under the same name, so no code change is needed.
+#
+# NOTE: a `[patch]` can't be published to crates.io and requires network to
+# fetch the git dep at build time (fine for the binary / AUR build).
 [patch.crates-io]
 bollard-stubs = { git = "https://github.com/loyalpartner/bollard.git", branch = "task-networks-attachments" }
