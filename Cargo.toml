@@ -31,6 +31,7 @@ lto = true
 #
 #   moby fix (swagger):   https://github.com/moby/moby/pull/53082  [MERGED]
 #   released in moby:     docker-v29.7.0 and later
+#   bollard spec bump:    https://github.com/fussybeaver/bollard/issues/767
 #   stub fork with field: loyalpartner/bollard @ task-networks-attachments
 #
 # Remaining blocker: bollard's codegen pins an older spec snapshot
