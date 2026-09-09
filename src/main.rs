@@ -3,6 +3,7 @@
 mod app;
 mod contexts;
 mod docker;
+mod mark;
 mod ssh_wrap;
 mod ui;
 
