@@ -2,11 +2,12 @@
 
 use crate::contexts;
 use crate::docker::{self, Item, StatsSample, View};
+use crate::mark;
 use bollard::Docker;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use futures::StreamExt;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::AbortHandle;
 
@@ -127,6 +128,7 @@ pub struct App {
 
     pub view: View,
     pub items: Vec<Item>,
+    pub marked: HashSet<String>,
     pub selected: usize,
     pub loading: bool,
 
@@ -191,6 +193,7 @@ impl App {
             compose_projects: 0,
             view: View::Containers,
             items: Vec::new(),
+            marked: HashSet::new(),
             selected: 0,
             loading: true,
             mode: Mode::Table,
@@ -315,6 +318,7 @@ impl App {
                     // jump when the list is replaced by a refresh
                     let sel_id = self.selected_item().map(|it| it.id.clone());
                     self.items = items;
+                    mark::retain_existing(&mut self.marked, &self.items);
                     self.loading = false;
                     if self.view == View::Volumes {
                         self.apply_volume_sizes();
@@ -510,10 +514,40 @@ impl App {
         }
     }
 
+    fn visible_markable_ids(&self) -> Vec<String> {
+        let vis = self.visible_indices();
+        mark::ids_at(&self.items, &vis)
+    }
+
+    fn toggle_mark_selected(&mut self) {
+        let Some(it) = self.selected_item() else { return };
+        if it.header {
+            return;
+        }
+        let id = it.id.clone();
+        mark::toggle_mark(&mut self.marked, &id);
+        self.move_sel(1);
+    }
+
+    fn mark_all_visible(&mut self) {
+        let ids = self.visible_markable_ids();
+        mark::mark_ids(&mut self.marked, ids);
+    }
+
+    fn unmark_all(&mut self) {
+        self.marked.clear();
+    }
+
+    fn invert_visible_marks(&mut self) {
+        let ids = self.visible_markable_ids();
+        mark::invert_marks(&mut self.marked, ids);
+    }
+
     // ---- navigation ----------------------------------------------------
 
     pub fn switch_view(&mut self, view: View) {
         self.view = view;
+        self.marked.clear();
         self.selected = 0;
         self.items.clear();
         self.filter.clear();
@@ -533,6 +567,7 @@ impl App {
             self.drill_service = it.name.clone();
             self.prev_view = self.view;
             self.view = View::ServiceTasks;
+            self.marked.clear();
             self.selected = 0;
             self.items.clear();
             self.filter.clear();
@@ -551,6 +586,7 @@ impl App {
             self.drill_stack = it.name.clone();
             self.prev_view = self.view;
             self.view = View::StackTasks;
+            self.marked.clear();
             self.selected = 0;
             self.items.clear();
             self.filter.clear();
@@ -569,6 +605,7 @@ impl App {
         };
         let proj = it.name.clone();
         self.view = View::Containers;
+        self.marked.clear();
         self.selected = 0;
         self.items.clear();
         self.sort_col = None;
@@ -1133,6 +1170,10 @@ impl App {
                 _ => self.status = "e: exec (Containers) / edit (Compose)".into(),
             },
             KeyCode::Char('t') => self.start_stats(),
+            KeyCode::Char('m') => self.toggle_mark_selected(),
+            KeyCode::Char('M') => self.mark_all_visible(),
+            KeyCode::Char('U') => self.unmark_all(),
+            KeyCode::Char('T') => self.invert_visible_marks(),
             KeyCode::Char('a') => {
                 if self.view == View::Containers {
                     self.show_all = !self.show_all;
