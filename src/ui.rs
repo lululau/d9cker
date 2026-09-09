@@ -246,9 +246,10 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
                 let style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
                 return Row::new(cells).style(style);
             }
+            // Match Emacs Catppuccin hl-line (#2f3244) — a step above dark bg.
             let mut style = if selected {
                 Style::default()
-                    .bg(Color::Rgb(40, 44, 52))
+                    .bg(Color::Rgb(47, 50, 68))
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
