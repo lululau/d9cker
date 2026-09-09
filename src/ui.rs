@@ -668,9 +668,6 @@ fn view_hint(view: View) -> &'static str {
 
 fn render_help(f: &mut Frame, area: Rect) {
     let w = 62.min(area.width.saturating_sub(4));
-    let h = 28.min(area.height.saturating_sub(2));
-    let popup = centered(area, w, h);
-    f.render_widget(Clear, popup);
     let lines = vec![
         help_line("Navigation", ""),
         help_line("  j / k, ↓ / ↑", "move selection"),
@@ -696,10 +693,9 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("Actions", ""),
         help_line("  t", "live stats — top (CPU/MEM/NET/BLK)"),
         help_line("  a", "toggle all / running-only (Containers)"),
-        help_line("  i", "inspect (describe)"),
+        help_line("  i", "inspect · view compose file (Compose)"),
         help_line("  e", "exec into container · edit compose file (Compose)"),
         help_line("  p", "peek — full value of every column (what … hides)"),
-        help_line("  i", "inspect · view compose file (Compose)"),
         help_line("  m", "toggle mark on row (then move down)"),
         help_line("  M", "mark all visible rows"),
         help_line("  U", "unmark all"),
@@ -721,6 +717,11 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("General", ""),
         help_line("  q / Ctrl-c", "quit"),
     ];
+    let h = ((lines.len() as u16).saturating_add(2))
+        .min(area.height.saturating_sub(2))
+        .max(8);
+    let popup = centered(area, w, h);
+    f.render_widget(Clear, popup);
     let p = Paragraph::new(lines)
         .block(
             Block::default()
