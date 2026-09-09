@@ -89,7 +89,9 @@ Press `?` at any time — help is global and overlays whatever you're looking at
 | `i` | inspect · view compose file (Compose) |
 | `e` | exec into container · edit compose file (Compose) |
 | `a` | toggle all / running-only containers |
-| `s` / `r` / `S` | stop / restart / start (`:pause` / `:unpause` too) |
+| `s` | stop container |
+| `r` | restart container |
+| `S` | start container (`:pause` / `:unpause` too) |
 | `+` / `-` | scale a swarm service |
 | `x` | delete (container / image / volume / network) — asks first |
 | `:` | command mode (`co`, `svc`, `nodes`, `ctx`, `prune`, `q`) |

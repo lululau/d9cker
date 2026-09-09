@@ -629,7 +629,7 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
 fn view_hint(view: View) -> &'static str {
     (match view {
         View::Containers => {
-            "Enter logs · p peek · i inspect · t stats · a all/running · s/r/S · e exec · x del"
+            "Enter logs · p peek · i inspect · t stats · a all/running · s stop · r restart · S start · e exec · x del"
         }
         View::Images => "i inspect · x del · :prune",
         View::Services => "Enter tasks · l logs · i inspect · +/- scale",
@@ -646,7 +646,7 @@ fn view_hint(view: View) -> &'static str {
 
 fn render_help(f: &mut Frame, area: Rect) {
     let w = 62.min(area.width.saturating_sub(4));
-    let h = 22.min(area.height.saturating_sub(2));
+    let h = 24.min(area.height.saturating_sub(2));
     let popup = centered(area, w, h);
     f.render_widget(Clear, popup);
     let lines = vec![
@@ -678,7 +678,9 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  e", "exec into container · edit compose file (Compose)"),
         help_line("  p", "peek — full value of every column (what … hides)"),
         help_line("  i", "inspect · view compose file (Compose)"),
-        help_line("  s / r / S", "stop / restart / start"),
+        help_line("  s", "stop container"),
+        help_line("  r", "restart container"),
+        help_line("  S", "start container"),
         help_line("  :pause", ":unpause — pause / unpause a container"),
         help_line("  x", "delete resource (container/image/volume/network)"),
         help_line("  + / -", "scale service up / down (Services)"),
