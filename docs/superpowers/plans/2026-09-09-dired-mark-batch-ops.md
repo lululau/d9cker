@@ -31,7 +31,7 @@
 - Modify: `src/main.rs` (add `mod mark;`)
 - Test: inline `#[cfg(test)]` in `src/mark.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `src/mark.rs`:
 
@@ -159,13 +159,13 @@ Add to `src/main.rs` near other `mod` lines:
 mod mark;
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test --quiet mark::tests 2>&1 | tail -30`
 
 Expected: FAIL (assertions / empty returns)
 
-- [ ] **Step 3: Implement helpers**
+- [x] **Step 3: Implement helpers**
 
 Replace placeholders in `src/mark.rs` with:
 
@@ -211,13 +211,13 @@ pub fn resolve_targets(marked: &HashSet<String>, items: &[Item]) -> Vec<Target> 
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test --quiet mark::tests 2>&1 | tail -20`
 
 Expected: all `mark::tests` PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/mark.rs src/main.rs
@@ -232,7 +232,7 @@ git commit -m "feat: add pure mark-set helpers for dired-style marks"
 - Modify: `src/app.rs` (`App` struct ~119, `App::new` ~178, `on_msg` Data ~311, `switch_view` ~516, `drill_into_*`, `table_key` ~1078)
 - Test: extend `src/mark.rs` tests only if needed; App key wiring verified via `cargo test` + compile
 
-- [ ] **Step 1: Add field and clear/retain hooks**
+- [x] **Step 1: Add field and clear/retain hooks**
 
 In `src/app.rs`:
 
@@ -263,7 +263,7 @@ self.marked.clear();
 
 Also clear in `drill_into_service`, `drill_into_stack`, and any path that changes `self.view` without calling `switch_view` (search for `self.view =`).
 
-- [ ] **Step 2: Add mark methods on App**
+- [x] **Step 2: Add mark methods on App**
 
 ```rust
 fn visible_markable_ids(&self) -> Vec<String> {
@@ -294,7 +294,7 @@ fn invert_visible_marks(&mut self) {
 }
 ```
 
-- [ ] **Step 3: Bind keys in `table_key`**
+- [x] **Step 3: Bind keys in `table_key`**
 
 Inside the `match code` of `table_key`, add (keep `t` → `start_stats`):
 
@@ -305,13 +305,13 @@ KeyCode::Char('U') => self.unmark_all(),
 KeyCode::Char('T') => self.invert_visible_marks(),
 ```
 
-- [ ] **Step 4: Compile + unit tests**
+- [x] **Step 4: Compile + unit tests**
 
 Run: `cargo test --quiet 2>&1 | tail -25`
 
 Expected: PASS (including `mark::tests`)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/app.rs
@@ -326,7 +326,7 @@ git commit -m "feat: wire marked set and m/M/U/T keybindings"
 - Modify: `src/ui.rs` (`render_status` ~56, `render_table` ~191, `natural_widths` if present, `view_hint` ~629, `render_help` ~648)
 - Modify: `README.md` keybindings
 
-- [ ] **Step 1: Status bar mark count**
+- [x] **Step 1: Status bar mark count**
 
 In `render_status`, after the sort span block (before rendering left), append when marks exist:
 
@@ -341,7 +341,7 @@ if !app.marked.is_empty() {
 
 Do **not** put this only in `app.status` — `Msg::Data` clears `status` on every refresh.
 
-- [ ] **Step 2: Table gutter + styles**
+- [x] **Step 2: Table gutter + styles**
 
 In `render_table`:
 
@@ -371,7 +371,7 @@ If both “exited dim” and marked apply, prefer marked magenta over DarkGray f
 
 4. Update `natural_widths` (or equivalent) to add `1` (or `2` with spacing) for the gutter so horizontal scroll still works.
 
-- [ ] **Step 3: Help + footer + README**
+- [x] **Step 3: Help + footer + README**
 
 Footer Containers hint — extend string to include mark keys, e.g. append ` · m mark · M all · U none · T invert`.
 
@@ -389,13 +389,13 @@ Bump help popup height by ~4 (`h = 28` or `lines.len()`-aware).
 
 README keybindings: add the four mark keys and one line that marked rows make `s`/`r`/`S`/`x` batch.
 
-- [ ] **Step 4: Build**
+- [x] **Step 4: Build**
 
 Run: `cargo build --quiet 2>&1 | tail -20`
 
 Expected: success
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ui.rs README.md
@@ -410,7 +410,7 @@ git commit -m "feat: show mark gutter, status count, and help for marks"
 - Modify: `src/app.rs` (`PendingAction`, `action`, `delete_selected`, confirm `y` handler, new runners)
 - Test: add pure tests for “empty marked → no batch targets” already in `mark.rs`; add one test for noun pluralization helper if extracted
 
-- [ ] **Step 1: Extend `PendingAction`**
+- [x] **Step 1: Extend `PendingAction`**
 
 ```rust
 pub enum PendingAction {
@@ -428,7 +428,7 @@ pub enum PendingAction {
 }
 ```
 
-- [ ] **Step 2: Branch `action` and `delete_selected`**
+- [x] **Step 2: Branch `action` and `delete_selected`**
 
 Replace `action` roughly with:
 
@@ -506,7 +506,7 @@ fn delete_selected(&mut self) {
 }
 ```
 
-- [ ] **Step 3: Confirm handler + batch runner**
+- [x] **Step 3: Confirm handler + batch runner**
 
 In the `y`/`Y` confirm match, add:
 
@@ -599,13 +599,13 @@ Msg::BatchDone {
 
 (Always refresh after batch so lists update; lifecycle marks remain per spec.)
 
-- [ ] **Step 4: Tests + build**
+- [x] **Step 4: Tests + build**
 
 Run: `cargo test --quiet 2>&1 | tail -30 && cargo clippy --quiet --all-targets -- -D warnings 2>&1 | tail -30`
 
 Expected: PASS / no warnings
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/app.rs
@@ -631,11 +631,11 @@ Checklist:
 5. Switch tab (`l`/`h`) → marks cleared.
 6. `t` still opens stats; `u` still half-page up; `T` does not open stats.
 
-- [ ] **Step 2: Fix any issues found**
+- [x] **Step 2: Fix any issues found**
 
 Commit fixes with a focused message if needed.
 
-- [ ] **Step 3: Final commit if docs/help adjusted**
+- [x] **Step 3: Final commit if docs/help adjusted**
 
 ```bash
 git add -u
