@@ -13,6 +13,8 @@ use ratatui::{
 };
 
 const ACCENT: Color = Color::Cyan;
+/// Key / command style in Help and footer hints — yellow like the active tab.
+const HELP_KEY: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
 
 pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::vertical([
@@ -639,12 +641,29 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
         };
         Line::from(Span::styled(app.status.clone(), Style::default().fg(color)))
     } else {
-        Line::from(Span::styled(
-            view_hint(app.view),
-            Style::default().fg(Color::DarkGray),
-        ))
+        footer_hint_line(view_hint(app.view))
     };
     f.render_widget(Paragraph::new(content), area);
+}
+
+/// Style footer keybinding hints: yellow keys/commands, dim descriptions.
+/// Segments are separated by ` · `; the first token of each segment is the key
+/// (e.g. `p`, `Enter`, `Ctrl-r`, `:prune`).
+fn footer_hint_line(hint: &str) -> Line<'static> {
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut spans = Vec::new();
+    for (i, part) in hint.split(" · ").enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", dim));
+        }
+        if let Some((key, rest)) = part.split_once(' ') {
+            spans.push(Span::styled(key.to_string(), HELP_KEY));
+            spans.push(Span::styled(format!(" {rest}"), dim));
+        } else {
+            spans.push(Span::styled(part.to_string(), HELP_KEY));
+        }
+    }
+    Line::from(spans)
 }
 
 /// Contextual keybinding hint for the footer, per view.
@@ -704,7 +723,8 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  r", "restart container"),
         help_line("  S", "start container"),
         help_line("  s/r/S/x", "batch when marked; else current row"),
-        help_line("  :pause", ":unpause — pause / unpause a container"),
+        help_line("  :pause", "pause a container"),
+        help_line("  :unpause", "unpause a container"),
         help_line("  x", "delete resource (container/image/volume/network)"),
         help_line("  + / -", "scale service up / down (Services)"),
         help_line("  A", "attach to container (Ctrl-P Ctrl-Q to detach)"),
@@ -736,16 +756,39 @@ fn render_help(f: &mut Frame, area: Rect) {
 
 fn help_line(k: &str, v: &str) -> Line<'static> {
     if v.is_empty() {
-        Line::from(Span::styled(
-            k.to_string(),
-            Style::default().fg(Color::Magenta).bold(),
-        ))
+        Line::from(Span::styled(k.to_string(), Style::default().fg(Color::Magenta).bold()))
     } else {
-        Line::from(vec![
-            Span::styled(format!("{k:<18}"), Style::default().fg(ACCENT)),
-            Span::raw(v.to_string()),
-        ])
+        let mut spans = vec![Span::styled(format!("{k:<18}"), HELP_KEY)];
+        spans.extend(help_value_spans(v));
+        Line::from(spans)
     }
+}
+
+/// Highlight `:command` tokens (e.g. `:prune`, `:unpause`) in help descriptions.
+fn help_value_spans(v: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut rest = v;
+    while let Some(start) = rest.find(':') {
+        if start > 0 {
+            spans.push(Span::raw(rest[..start].to_string()));
+        }
+        let after = &rest[start + 1..];
+        let end = after
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+            .unwrap_or(after.len());
+        if end == 0 {
+            // lone ':' — keep as plain text
+            spans.push(Span::raw(":".to_string()));
+            rest = after;
+            continue;
+        }
+        spans.push(Span::styled(format!(":{}", &after[..end]), HELP_KEY));
+        rest = &after[end..];
+    }
+    if !rest.is_empty() {
+        spans.push(Span::raw(rest.to_string()));
+    }
+    spans
 }
 
 fn render_confirm(f: &mut Frame, prompt: &str, area: Rect) {
