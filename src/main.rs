@@ -3,6 +3,7 @@
 mod app;
 mod contexts;
 mod docker;
+mod ssh_wrap;
 mod ui;
 
 use anyhow::Result;
@@ -15,6 +16,9 @@ use tokio::time::interval;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Must run before any bollard SSH connect: see ssh_wrap module docs.
+    ssh_wrap::install();
+
     let (tx, mut rx) = unbounded_channel::<Msg>();
 
     // Non-TUI end-to-end smoke test of the data layer against the live daemon.

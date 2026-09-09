@@ -31,8 +31,11 @@ pub const TABS: [View; 9] = [
 fn humanize_error(e: &str) -> String {
     if e.contains("permission denied") && e.contains("docker.sock") {
         format!("{e}  — 远程用户无 docker socket 权限,请将其加入 docker 组")
-    } else if e.contains("raw stream connection") || e.contains("SendRequest") {
-        format!("{e}  — 无法连接该 context 的 docker daemon(检查 ssh 可达性/权限)")
+    } else if e.contains("raw stream connection") || e.contains("SendRequest") || e.contains("Connect") {
+        format!(
+            "{e}  — SSH 到该 context 失败(确认 `ssh`/`docker --context` 可用; \
+             若 ~/.ssh/config 有 ControlMaster yes,d9cker 会自动兼容)"
+        )
     } else {
         e.to_string()
     }
