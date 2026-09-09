@@ -654,7 +654,11 @@ impl App {
                 self.context = name.clone();
                 self.swarm.clear();
                 self.vol_sizes.clear();
-                self.status = format!("switched to context '{name}'");
+                if let Err(e) = contexts::save_last_context(&name) {
+                    self.status = format!("switched to '{name}' (persist failed: {e})");
+                } else {
+                    self.status = format!("switched to context '{name}'");
+                }
                 self.refresh_meta();
                 self.switch_view(View::Containers);
             }

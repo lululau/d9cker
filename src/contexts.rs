@@ -4,9 +4,13 @@
 //! `~/.docker/contexts` store. So we read the store ourselves to enumerate
 //! contexts and resolve each one to an endpoint host string
 //! (`ssh://…`, `unix://…`, `tcp://…`), which we then hand to bollard.
+//!
+//! Session preference (last TUI-selected context) is stored separately under
+//! `~/.config/d9cker/config.json` so switching never mutates Docker's global
+//! `currentContext`.
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
@@ -50,12 +54,52 @@ struct CliConfig {
     current_context: String,
 }
 
+#[derive(Serialize, Deserialize, Default)]
+struct D9ckerConfig {
+    #[serde(default)]
+    last_context: String,
+}
+
 fn docker_dir() -> PathBuf {
     if let Ok(d) = std::env::var("DOCKER_CONFIG") {
         return PathBuf::from(d);
     }
     let home = std::env::var("HOME").unwrap_or_default();
     PathBuf::from(home).join(".docker")
+}
+
+/// `~/.config/d9cker/config.json` (or `$XDG_CONFIG_HOME/d9cker/config.json`).
+fn d9cker_config_path() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return PathBuf::from(xdg).join("d9cker").join("config.json");
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home)
+        .join(".config")
+        .join("d9cker")
+        .join("config.json")
+}
+
+fn load_d9cker_config() -> D9ckerConfig {
+    let Ok(text) = std::fs::read_to_string(d9cker_config_path()) else {
+        return D9ckerConfig::default();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+/// Persist the context chosen inside the TUI (does not touch Docker CLI config).
+pub fn save_last_context(name: &str) -> Result<()> {
+    let path = d9cker_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut cfg = load_d9cker_config();
+    cfg.last_context = name.to_string();
+    let text = serde_json::to_string_pretty(&cfg)?;
+    std::fs::write(path, text)?;
+    Ok(())
 }
 
 /// The built-in "default" context (not stored on disk).
@@ -94,16 +138,28 @@ pub fn load_contexts() -> Vec<DockerContext> {
     out
 }
 
-/// The context Docker would use right now: $DOCKER_CONTEXT, else the CLI
-/// config's `currentContext`, else "default".
+/// Context to open on startup:
+/// 1. `$DOCKER_CONTEXT` (explicit override)
+/// 2. d9cker's last TUI-selected context (if it still exists)
+/// 3. Docker CLI `currentContext`
+/// 4. `"default"`
+///
+/// Switching inside the TUI updates (2) only — never Docker's global config.
 pub fn current_context() -> String {
     if let Ok(c) = std::env::var("DOCKER_CONTEXT") {
         if !c.is_empty() {
             return c;
         }
     }
-    let cfg = docker_dir().join("config.json");
-    if let Ok(text) = std::fs::read_to_string(cfg) {
+
+    let known = load_contexts();
+    let cfg = load_d9cker_config();
+    if !cfg.last_context.is_empty() && known.iter().any(|c| c.name == cfg.last_context) {
+        return cfg.last_context;
+    }
+
+    let docker_cfg = docker_dir().join("config.json");
+    if let Ok(text) = std::fs::read_to_string(docker_cfg) {
         if let Ok(c) = serde_json::from_str::<CliConfig>(&text) {
             if !c.current_context.is_empty() {
                 return c.current_context;
@@ -164,7 +220,11 @@ pub async fn read_file(host: &str, path: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{sh_quote, ssh_target};
+    use super::{load_d9cker_config, save_last_context, sh_quote, ssh_target};
+    use std::sync::Mutex;
+
+    // serialize env mutation across tests in this module
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn ssh_target_parses() {
@@ -183,5 +243,19 @@ mod tests {
     fn sh_quote_escapes() {
         assert_eq!(sh_quote("/a/b.yml"), "'/a/b.yml'");
         assert_eq!(sh_quote("/it's/x.yml"), "'/it'\\''s/x.yml'");
+    }
+
+    #[test]
+    fn last_context_roundtrip() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("d9cker-cfg-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        save_last_context("lx").unwrap();
+        let cfg = load_d9cker_config();
+        assert_eq!(cfg.last_context, "lx");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 }

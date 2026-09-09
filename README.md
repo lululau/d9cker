@@ -33,7 +33,7 @@ swarm. d9cker puts all of that behind one keystroke each, on any engine, over ss
 
 | | |
 |---|---|
-| 🔀 **Context switching** | Every `docker context` — local socket, TLS, `ssh://` remote. Switching never touches your global `docker context use`. |
+| 🔀 **Context switching** | Every `docker context` — local socket, TLS, `ssh://` remote. Switching never touches your global `docker context use`; the last TUI choice is remembered in `~/.config/d9cker/config.json`. |
 | 🧠 **Context-aware tabs** | Services/Nodes appear only on swarm engines. Compose appears only where compose projects exist. The UI adapts to the engine you're on. |
 | 📜 **Live logs** | Stream `logs -f` for any container or service. Follow, scrollback, in-log search (`/`), wrap, save to file. |
 | 📊 **Live stats** | Per-container CPU %, memory, network and block I/O, PIDs — streaming, ~1/sec. |
@@ -69,7 +69,7 @@ Then just:
 d9cker
 ```
 
-It picks up your current `docker context`. No configuration.
+Startup context order: `$DOCKER_CONTEXT`, then d9cker's last TUI selection, then Docker's `currentContext`, then `default`.
 
 ## Keybindings
 
