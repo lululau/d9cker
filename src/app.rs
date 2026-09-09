@@ -120,6 +120,8 @@ pub enum PendingAction {
         targets: Vec<mark::Target>,
     },
     PruneImages,
+    /// ≈ `docker system prune -a` (no volumes).
+    SystemPrune,
 }
 
 pub struct Confirm {
@@ -1039,6 +1041,14 @@ impl App {
         });
     }
 
+    fn request_sysprune(&mut self) {
+        self.confirm = Some(Confirm {
+            prompt: "SYSTEM prune -a: unused containers/networks/images + build cache (NOT volumes)"
+                .into(),
+            action: PendingAction::SystemPrune,
+        });
+    }
+
     fn do_prune_images(&mut self) {
         self.status = "pruning dangling images…".into();
         let tx = self.tx.clone();
@@ -1047,6 +1057,19 @@ impl App {
             let msg = match docker::prune_images(&docker).await {
                 Ok(m) => Msg::Info(m),
                 Err(e) => Msg::Error(format!("prune: {e}")),
+            };
+            let _ = tx.send(msg);
+        });
+    }
+
+    fn do_system_prune(&mut self) {
+        self.status = "system prune -a…".into();
+        let tx = self.tx.clone();
+        let docker = self.docker.clone();
+        tokio::spawn(async move {
+            let msg = match docker::system_prune_all(&docker).await {
+                Ok(m) => Msg::Info(m),
+                Err(e) => Msg::Error(format!("sysprune: {e}")),
             };
             let _ = tx.send(msg);
         });
@@ -1176,6 +1199,7 @@ impl App {
                                 self.run_batch(verb, view, targets)
                             }
                             PendingAction::PruneImages => self.do_prune_images(),
+                            PendingAction::SystemPrune => self.do_system_prune(),
                         }
                     }
                 }
@@ -1368,6 +1392,7 @@ impl App {
             "ctx" | "context" | "contexts" => self.switch_view(View::Contexts),
             "q" | "quit" => self.should_quit = true,
             "prune" => self.request_prune(),
+            "sysprune" => self.request_sysprune(),
             "pause" => self.action("pause"),
             "unpause" => self.action("unpause"),
             "" => {}

@@ -99,7 +99,7 @@ Press `?` at any time — help is global and overlays whatever you're looking at
 | `+` / `-` | scale a swarm service |
 | `x` | delete (container / image / volume / network) — asks first |
 | marked + `s`/`r`/`S`/`x` | apply to all marked rows (batch); else current row |
-| `:` | command mode (`co`, `svc`, `nodes`, `ctx`, `prune`, `q`) |
+| `:` | command mode (`co`, `svc`, `nodes`, `ctx`, `prune`, `sysprune`, `q`) |
 | `q` / `Ctrl-c` | quit |
 
 ## How it works

@@ -11,7 +11,8 @@ use bollard::query_parameters::{
     DataUsageOptions, InspectContainerOptions, InspectNetworkOptions, InspectServiceOptions,
     ListContainersOptionsBuilder, ListImagesOptionsBuilder, ListNetworksOptions, ListNodesOptions,
     ListServicesOptions, ListTasksOptionsBuilder, ListVolumesOptions, LogsOptionsBuilder,
-    PruneImagesOptions, RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder,
+    PruneBuildOptions, PruneContainersOptions, PruneImagesOptions, PruneImagesOptionsBuilder,
+    PruneNetworksOptions, RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder,
     RemoveVolumeOptionsBuilder, RestartContainerOptions, StartContainerOptions,
     StatsOptionsBuilder, StopContainerOptions, UpdateServiceOptionsBuilder,
 };
@@ -1181,6 +1182,41 @@ pub async fn prune_images(docker: &Docker) -> Result<String> {
     let reclaimed = resp.space_reclaimed.unwrap_or(0);
     Ok(format!(
         "pruned {n} image(s), reclaimed {}",
+        human_size(reclaimed)
+    ))
+}
+
+/// ≈ `docker system prune -a` without `--volumes`: unused containers, networks,
+/// unused images (not just dangling), and build cache.
+pub async fn system_prune_all(docker: &Docker) -> Result<String> {
+    let c = docker
+        .prune_containers(None::<PruneContainersOptions>)
+        .await?;
+    let n_c = c.containers_deleted.as_ref().map(|v| v.len()).unwrap_or(0);
+    let reclaim_c = c.space_reclaimed.unwrap_or(0);
+
+    let net = docker.prune_networks(None::<PruneNetworksOptions>).await?;
+    let n_net = net.networks_deleted.as_ref().map(|v| v.len()).unwrap_or(0);
+
+    let mut img_filters = HashMap::new();
+    img_filters.insert("dangling", vec!["false"]);
+    let img = docker
+        .prune_images(Some(
+            PruneImagesOptionsBuilder::default()
+                .filters(&img_filters)
+                .build(),
+        ))
+        .await?;
+    let n_img = img.images_deleted.as_ref().map(|v| v.len()).unwrap_or(0);
+    let reclaim_img = img.space_reclaimed.unwrap_or(0);
+
+    let build = docker.prune_build(None::<PruneBuildOptions>).await?;
+    let n_build = build.caches_deleted.as_ref().map(|v| v.len()).unwrap_or(0);
+    let reclaim_build = build.space_reclaimed.unwrap_or(0);
+
+    let reclaimed = reclaim_c + reclaim_img + reclaim_build;
+    Ok(format!(
+        "system prune -a: {n_c} container(s), {n_net} network(s), {n_img} image(s), {n_build} build cache; reclaimed {} (volumes NOT pruned)",
         human_size(reclaimed)
     ))
 }

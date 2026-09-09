@@ -672,7 +672,9 @@ fn view_hint(view: View) -> &'static str {
         View::Containers => {
             "Enter logs · p peek · i inspect · t stats · a all/running · s stop · r restart · S start · e exec · x del · m mark · M all · U none · T invert"
         }
-        View::Images => "i inspect · x del · :prune · m mark · M all · U none · T invert",
+        View::Images => {
+            "i inspect · x del · :prune · :sysprune · m mark · M all · U none · T invert"
+        }
         View::Services => "Enter tasks · l logs · i inspect · +/- scale",
         View::Nodes => "i inspect",
         View::Volumes => "i inspect · x del · Ctrl-r refresh sizes · m mark · M all · U none · T invert",
@@ -702,7 +704,10 @@ fn render_help(f: &mut Frame, area: Rect) {
             "  1..9",
             "jump to a tab by position (Containers…Contexts)",
         ),
-        help_line("  : cmd", "co, im, svc, stacks, nodes, ctx, q  (jump to view)"),
+        help_line(
+            "  : cmd",
+            "co, im, svc, stacks, nodes, ctx, prune, sysprune, q",
+        ),
         help_line("  /", "filter rows   (Esc clears)"),
         help_line("  o / O", "cycle sort column / reverse direction"),
         help_line(
@@ -729,6 +734,10 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  + / -", "scale service up / down (Services)"),
         help_line("  A", "attach to container (Ctrl-P Ctrl-Q to detach)"),
         help_line("  :prune", "prune dangling images"),
+        help_line(
+            "  :sysprune",
+            "system prune -a (unused containers/networks/images; NOT volumes)",
+        ),
         help_line("  Ctrl-r", "manual refresh current view (+ volume sizes)"),
         help_line("Logs / Inspect", ""),
         help_line("  f / w", "toggle follow / wrap (logs)"),
@@ -792,7 +801,9 @@ fn help_value_spans(v: &str) -> Vec<Span<'static>> {
 }
 
 fn render_confirm(f: &mut Frame, prompt: &str, area: Rect) {
-    let popup = centered(area, 56, 5);
+    // Wide enough for long prompts (e.g. :sysprune).
+    let w = ((prompt.len() as u16).saturating_add(6)).clamp(56, area.width.saturating_sub(4));
+    let popup = centered(area, w, 5);
     f.render_widget(Clear, popup);
     let text = vec![
         Line::from(format!("{prompt}?")).centered(),
