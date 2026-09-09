@@ -90,6 +90,11 @@ pub enum Msg {
     Inspect(String),
     Error(String),
     Info(String),
+    BatchDone {
+        verb: String,
+        summary: String,
+        remove_marks: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -108,6 +113,11 @@ pub enum PendingAction {
         view: View,
         id: String,
         label: String,
+    },
+    Batch {
+        verb: String, // "delete" | "stop" | "restart" | "start"
+        view: View,
+        targets: Vec<mark::Target>,
     },
     PruneImages,
 }
@@ -401,6 +411,20 @@ impl App {
                 if self.mode == Mode::Table {
                     self.refresh();
                 }
+            }
+            Msg::BatchDone {
+                verb,
+                summary,
+                remove_marks,
+            } => {
+                // delete: drop succeeded ids; lifecycle leaves marks alone
+                if verb == "delete" {
+                    for id in remove_marks {
+                        self.marked.remove(&id);
+                    }
+                }
+                self.status = summary;
+                self.refresh();
             }
         }
     }
@@ -830,12 +854,28 @@ impl App {
             self.status = format!("{verb}: only in Containers view");
             return;
         }
+        if !self.marked.is_empty() {
+            let targets = mark::resolve_targets(&self.marked, &self.items);
+            if targets.is_empty() {
+                mark::retain_existing(&mut self.marked, &self.items);
+                self.status = format!("{verb}: marked rows gone — marks cleared");
+                return;
+            }
+            let n = targets.len();
+            self.confirm = Some(Confirm {
+                prompt: format!("{verb} {n} containers?"),
+                action: PendingAction::Batch {
+                    verb: verb.to_string(),
+                    view: self.view,
+                    targets,
+                },
+            });
+            return;
+        }
         let Some(it) = self.selected_item() else {
             return;
         };
-        let id = it.id.clone();
-        let label = it.name.clone();
-        self.run_action(verb.to_string(), id, label);
+        self.run_action(verb.to_string(), it.id.clone(), it.name.clone());
     }
 
     fn run_action(&mut self, verb: String, id: String, label: String) {
@@ -864,6 +904,35 @@ impl App {
                 return;
             }
         };
+        if !self.marked.is_empty() {
+            let targets = mark::resolve_targets(&self.marked, &self.items);
+            if targets.is_empty() {
+                mark::retain_existing(&mut self.marked, &self.items);
+                self.status = "delete: marked rows gone — marks cleared".into();
+                return;
+            }
+            let n = targets.len();
+            let plural = if n == 1 {
+                noun
+            } else {
+                match noun {
+                    "container" => "containers",
+                    "image" => "images",
+                    "volume" => "volumes",
+                    "network" => "networks",
+                    other => other,
+                }
+            };
+            self.confirm = Some(Confirm {
+                prompt: format!("remove {n} {plural}?"),
+                action: PendingAction::Batch {
+                    verb: "delete".into(),
+                    view: self.view,
+                    targets,
+                },
+            });
+            return;
+        }
         let Some(it) = self.selected_item() else {
             return;
         };
@@ -887,6 +956,58 @@ impl App {
                 Err(e) => Msg::Error(format!("remove {label}: {e}")),
             };
             let _ = tx.send(msg);
+        });
+    }
+
+    fn run_batch(&mut self, verb: String, view: View, targets: Vec<mark::Target>) {
+        let n = targets.len();
+        self.status = format!("{verb} 0/{n}…");
+        let tx = self.tx.clone();
+        let docker = self.docker.clone();
+        tokio::spawn(async move {
+            let mut ok = 0usize;
+            let mut first_err: Option<String> = None;
+            let mut succeeded_ids = Vec::new();
+            for t in &targets {
+                let res = if verb == "delete" {
+                    docker::delete(&docker, view, &t.id).await
+                } else {
+                    docker::container_action(&docker, &verb, &t.id).await
+                };
+                match res {
+                    Ok(()) => {
+                        ok += 1;
+                        succeeded_ids.push(t.id.clone());
+                    }
+                    Err(e) => {
+                        if first_err.is_none() {
+                            first_err = Some(format!("{}: {e}", t.label));
+                        }
+                    }
+                }
+            }
+            let fail = n - ok;
+            let summary = if fail == 0 {
+                format!("{verb} {ok}/{n} ✓")
+            } else {
+                format!(
+                    "{verb} {ok}/{n} ✓ ({fail} failed{})",
+                    first_err
+                        .as_ref()
+                        .map(|e| format!(": {e}"))
+                        .unwrap_or_default()
+                )
+            };
+            let remove_marks = if verb == "delete" {
+                succeeded_ids
+            } else {
+                Vec::new()
+            };
+            let _ = tx.send(Msg::BatchDone {
+                verb,
+                summary,
+                remove_marks,
+            });
         });
     }
 
@@ -1050,6 +1171,9 @@ impl App {
                         match c.action {
                             PendingAction::Delete { view, id, label } => {
                                 self.run_delete(view, id, label)
+                            }
+                            PendingAction::Batch { verb, view, targets } => {
+                                self.run_batch(verb, view, targets)
                             }
                             PendingAction::PruneImages => self.do_prune_images(),
                         }
