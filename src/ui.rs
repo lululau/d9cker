@@ -117,6 +117,12 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Yellow),
         ));
     }
+    if !app.marked.is_empty() {
+        left.push(Span::styled(
+            format!("  ✳ {} marked", app.marked.len()),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
     f.render_widget(Paragraph::new(Line::from(left)), cols[0]);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -193,21 +199,24 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     let vis = app.visible_indices();
 
     let arrow = if app.sort_desc { " ▼" } else { " ▲" };
-    let header = Row::new(cols.iter().enumerate().map(|(i, c)| {
-        let text = if app.sort_col == Some(i) {
-            format!("{c}{arrow}")
-        } else {
-            (*c).to_string()
-        };
-        let style = if app.sort_col == Some(i) {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-        };
-        Cell::from(text).style(style)
-    }))
+    // Gutter is display-only; sort_col still indexes Item.cells / columns().
+    let header = Row::new(
+        std::iter::once(Cell::from(" ")).chain(cols.iter().enumerate().map(|(i, c)| {
+            let text = if app.sort_col == Some(i) {
+                format!("{c}{arrow}")
+            } else {
+                (*c).to_string()
+            };
+            let style = if app.sort_col == Some(i) {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+            };
+            Cell::from(text).style(style)
+        })),
+    )
     .height(1);
 
     let rows = vis
@@ -217,13 +226,21 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         .map(|(row_i, &item_i)| {
             let it = &app.items[item_i];
             let selected = row_i == app.selected;
+            let mark = if !it.header && app.marked.contains(&it.id) {
+                "*"
+            } else {
+                " "
+            };
             // service group heading (grouped stack-tasks view): one accented,
             // non-selectable line — skip the per-cell colorize / dim logic
             if it.header {
                 let caps = app.view.col_max();
-                let cells = it.cells.iter().enumerate().map(|(ci, v)| {
-                    Cell::from(fit(v, caps.get(ci).copied().unwrap_or(30)))
-                });
+                let cells = std::iter::once(Cell::from(mark)).chain(
+                    it.cells
+                        .iter()
+                        .enumerate()
+                        .map(|(ci, v)| Cell::from(fit(v, caps.get(ci).copied().unwrap_or(30)))),
+                );
                 let style = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
                 return Row::new(cells).style(style);
             }
@@ -234,23 +251,28 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default()
             };
-            // dim non-running containers: keeps the running ones visually dominant
-            if !selected
+            let is_marked = app.marked.contains(&it.id);
+            // marked accent wins over exited dimming; selection style still wins
+            if !selected && is_marked {
+                style = style.fg(Color::Magenta);
+            } else if !selected
                 && app.view == View::Containers
                 && it.cells.get(3).map(|s| s != "running").unwrap_or(false)
             {
                 style = style.fg(Color::DarkGray);
             }
             let caps = app.view.col_max();
-            let cells = it.cells.iter().enumerate().map(|(ci, v)| {
-                let cap = caps.get(ci).copied().unwrap_or(30);
-                let mut cell = Cell::from(fit(v, cap));
-                // colorize the STATE-ish column
-                if let Some(color) = state_color(app.view, ci, v) {
-                    cell = cell.style(Style::default().fg(color));
-                }
-                cell
-            });
+            let cells = std::iter::once(Cell::from(mark)).chain(it.cells.iter().enumerate().map(
+                |(ci, v)| {
+                    let cap = caps.get(ci).copied().unwrap_or(30);
+                    let mut cell = Cell::from(fit(v, cap));
+                    // colorize the STATE-ish column
+                    if let Some(color) = state_color(app.view, ci, v) {
+                        cell = cell.style(Style::default().fg(color));
+                    }
+                    cell
+                },
+            ));
             Row::new(cells).style(style)
         });
 
@@ -346,12 +368,12 @@ fn natural_widths(app: &App, vis: &[usize]) -> Vec<u16> {
             }
         }
     }
-    w.iter()
-        .enumerate()
-        .map(|(i, &x)| {
+    // leading 1-char mark gutter (display-only; not a sort column)
+    std::iter::once(1u16)
+        .chain(w.iter().enumerate().map(|(i, &x)| {
             let cap = caps.get(i).copied().unwrap_or(30) as usize;
             x.clamp(1, cap) as u16
-        })
+        }))
         .collect()
 }
 
@@ -629,13 +651,13 @@ fn render_footer(f: &mut Frame, app: &App, area: Rect) {
 fn view_hint(view: View) -> &'static str {
     (match view {
         View::Containers => {
-            "Enter logs · p peek · i inspect · t stats · a all/running · s stop · r restart · S start · e exec · x del"
+            "Enter logs · p peek · i inspect · t stats · a all/running · s stop · r restart · S start · e exec · x del · m mark · M all · U none · T invert"
         }
-        View::Images => "i inspect · x del · :prune",
+        View::Images => "i inspect · x del · :prune · m mark · M all · U none · T invert",
         View::Services => "Enter tasks · l logs · i inspect · +/- scale",
         View::Nodes => "i inspect",
-        View::Volumes => "i inspect · x del · Ctrl-r refresh sizes",
-        View::Networks => "i inspect · x del",
+        View::Volumes => "i inspect · x del · Ctrl-r refresh sizes · m mark · M all · U none · T invert",
+        View::Networks => "i inspect · x del · m mark · M all · U none · T invert",
         View::Compose => "Enter containers · p peek · i view compose file · e edit compose file",
         View::Contexts => "Enter switch context",
         View::ServiceTasks => "Esc back · l logs · i inspect",
@@ -646,7 +668,7 @@ fn view_hint(view: View) -> &'static str {
 
 fn render_help(f: &mut Frame, area: Rect) {
     let w = 62.min(area.width.saturating_sub(4));
-    let h = 24.min(area.height.saturating_sub(2));
+    let h = 28.min(area.height.saturating_sub(2));
     let popup = centered(area, w, h);
     f.render_widget(Clear, popup);
     let lines = vec![
@@ -678,9 +700,14 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  e", "exec into container · edit compose file (Compose)"),
         help_line("  p", "peek — full value of every column (what … hides)"),
         help_line("  i", "inspect · view compose file (Compose)"),
+        help_line("  m", "toggle mark on row (then move down)"),
+        help_line("  M", "mark all visible rows"),
+        help_line("  U", "unmark all"),
+        help_line("  T", "invert marks on visible rows"),
         help_line("  s", "stop container"),
         help_line("  r", "restart container"),
         help_line("  S", "start container"),
+        help_line("  s/r/S/x", "batch when marked; else current row"),
         help_line("  :pause", ":unpause — pause / unpause a container"),
         help_line("  x", "delete resource (container/image/volume/network)"),
         help_line("  + / -", "scale service up / down (Services)"),

@@ -89,11 +89,16 @@ Press `?` at any time — help is global and overlays whatever you're looking at
 | `i` | inspect · view compose file (Compose) |
 | `e` | exec into container · edit compose file (Compose) |
 | `a` | toggle all / running-only containers |
+| `m` | toggle mark on the current row (then move down) |
+| `M` | mark all visible rows |
+| `U` | unmark all |
+| `T` | invert marks on visible rows |
 | `s` | stop container |
 | `r` | restart container |
 | `S` | start container (`:pause` / `:unpause` too) |
 | `+` / `-` | scale a swarm service |
 | `x` | delete (container / image / volume / network) — asks first |
+| marked + `s`/`r`/`S`/`x` | apply to all marked rows (batch); else current row |
 | `:` | command mode (`co`, `svc`, `nodes`, `ctx`, `prune`, `q`) |
 | `q` / `Ctrl-c` | quit |
 
