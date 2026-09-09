@@ -8,11 +8,26 @@ mod ui;
 
 use anyhow::Result;
 use app::{App, Mode, Msg};
-use crossterm::event::{Event, EventStream, KeyEventKind};
+use crossterm::{
+    cursor::{Hide, MoveTo, Show},
+    event::{Event, EventStream, KeyEventKind},
+    execute,
+    terminal::{
+        disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
+};
 use futures::StreamExt;
+use std::io::{stdout, Write};
+use std::os::unix::io::AsRawFd;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::interval;
+
+/// Saved dup of the stderr logfile fd, so we can point fd 2 back at it after
+/// temporarily restoring `/dev/tty` for interactive `docker exec` / editors.
+static STDERR_LOG_FD: AtomicI32 = AtomicI32::new(-1);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -58,7 +73,6 @@ async fn main() -> Result<()> {
 /// The ssh transport spawned by bollard/openssh inherits fd 2, so its
 /// connection diagnostics land in the log instead of over the TUI.
 fn redirect_stderr_to_log() -> Option<std::path::PathBuf> {
-    use std::os::unix::io::AsRawFd;
     let dir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
     let path = std::path::Path::new(&dir).join("d9cker.log");
     let file = std::fs::OpenOptions::new()
@@ -66,12 +80,70 @@ fn redirect_stderr_to_log() -> Option<std::path::PathBuf> {
         .append(true)
         .open(&path)
         .ok()?;
-    // SAFETY: dup2 onto STDERR_FILENO; file fd is valid for the call.
+    // SAFETY: dup the logfile fd for later restore; dup2 onto STDERR_FILENO.
     unsafe {
+        let kept = libc::dup(file.as_raw_fd());
+        if kept >= 0 {
+            STDERR_LOG_FD.store(kept, Ordering::SeqCst);
+        }
         libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
     }
     std::mem::forget(file); // keep the fd open for the process lifetime
     Some(path)
+}
+
+/// Point stderr at the controlling tty (for interactive external commands).
+fn stderr_to_tty() {
+    if let Ok(tty) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+    {
+        unsafe {
+            libc::dup2(tty.as_raw_fd(), libc::STDERR_FILENO);
+        }
+    }
+}
+
+/// Point stderr back at the session logfile.
+fn stderr_to_log() {
+    let fd = STDERR_LOG_FD.load(Ordering::SeqCst);
+    if fd >= 0 {
+        unsafe {
+            libc::dup2(fd, libc::STDERR_FILENO);
+        }
+    }
+}
+
+/// Leave the TUI alternate screen and hand a clean, cooked tty to an external
+/// interactive program (`docker exec`, editor, attach).
+///
+/// `ratatui::restore()` alone is not enough: it never emits cursor `Show`, so
+/// the shell inherits a hidden cursor; and without an explicit clear, some
+/// terminals still show the TUI cells under the shell prompt.
+fn suspend_tui(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+    let _ = terminal.show_cursor();
+    disable_raw_mode()?;
+    execute!(
+        stdout(),
+        LeaveAlternateScreen,
+        Show,
+        Clear(ClearType::All),
+        MoveTo(0, 0)
+    )?;
+    stdout().flush()?;
+    stderr_to_tty();
+    Ok(())
+}
+
+/// Re-enter the TUI alternate screen after an external command returns.
+fn resume_tui(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+    stderr_to_log();
+    execute!(stdout(), EnterAlternateScreen, Hide)?;
+    enable_raw_mode()?;
+    stdout().flush()?;
+    terminal.clear()?;
+    Ok(())
 }
 
 async fn run(
@@ -191,22 +263,33 @@ async fn smoke() -> Result<()> {
 /// interactive shell, then restore. This is the one spot we shell out to the
 /// CLI — bollard's exec stream can't cleanly own the real TTY.
 async fn exec_shell(terminal: &mut ratatui::DefaultTerminal, app: &App, id: &str) -> Result<()> {
-    ratatui::restore();
+    suspend_tui(terminal)?;
 
-    let mut cmd = tokio::process::Command::new("docker");
-    cmd.arg("--context").arg(&app.context);
-    cmd.args([
-        "exec",
-        "-it",
-        id,
-        "sh",
-        "-c",
-        "command -v bash >/dev/null 2>&1 && exec bash || exec sh",
-    ]);
-    let _ = cmd.status().await;
+    // Run synchronously on a blocking thread so the real TTY is handed off
+    // cleanly (tokio's process + raw-mode edge cases are easy to get wrong).
+    let context = app.context.clone();
+    let id = id.to_string();
+    let joined = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("docker")
+            .arg("--context")
+            .arg(&context)
+            .args([
+                "exec",
+                "-it",
+                &id,
+                "sh",
+                "-c",
+                "command -v bash >/dev/null 2>&1 && exec bash || exec sh",
+            ])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+    })
+    .await;
 
-    *terminal = ratatui::init();
-    terminal.clear()?;
+    resume_tui(terminal)?;
+    let _ = joined?;
     Ok(())
 }
 
@@ -214,28 +297,38 @@ async fn exec_shell(terminal: &mut ratatui::DefaultTerminal, app: &App, id: &str
 /// For ssh contexts the file lives on the remote box, so we edit it in place
 /// over ssh using the *remote* $EDITOR; local contexts just use the local one.
 async fn edit_file(terminal: &mut ratatui::DefaultTerminal, host: &str, path: &str) -> Result<()> {
-    ratatui::restore();
+    suspend_tui(terminal)?;
 
-    if let Some((target, port)) = contexts::ssh_target(host) {
-        let mut cmd = tokio::process::Command::new("ssh");
-        cmd.arg("-t");
-        if let Some(p) = port {
-            cmd.arg("-p").arg(p);
+    let host = host.to_string();
+    let path = path.to_string();
+    let joined = tokio::task::spawn_blocking(move || {
+        if let Some((target, port)) = contexts::ssh_target(&host) {
+            let mut cmd = std::process::Command::new("ssh");
+            cmd.arg("-t");
+            if let Some(p) = port {
+                cmd.arg("-p").arg(p);
+            }
+            // remote shell expands $EDITOR (falling back to vi)
+            cmd.arg(target)
+                .arg(format!("${{EDITOR:-vi}} {}", contexts::sh_quote(&path)));
+            cmd.stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status()
+        } else {
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+            std::process::Command::new(editor)
+                .arg(&path)
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .status()
         }
-        // remote shell expands $EDITOR (falling back to vi)
-        cmd.arg(target)
-            .arg(format!("${{EDITOR:-vi}} {}", contexts::sh_quote(path)));
-        let _ = cmd.status().await;
-    } else {
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-        let _ = tokio::process::Command::new(editor)
-            .arg(path)
-            .status()
-            .await;
-    }
+    })
+    .await;
 
-    *terminal = ratatui::init();
-    terminal.clear()?;
+    resume_tui(terminal)?;
+    let _ = joined?;
     Ok(())
 }
 
@@ -246,14 +339,23 @@ async fn attach_container(
     app: &App,
     id: &str,
 ) -> Result<()> {
-    ratatui::restore();
+    suspend_tui(terminal)?;
 
-    let mut cmd = tokio::process::Command::new("docker");
-    cmd.arg("--context").arg(&app.context);
-    cmd.args(["attach", "--sig-proxy=false", id]);
-    let _ = cmd.status().await;
+    let context = app.context.clone();
+    let id = id.to_string();
+    let joined = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("docker")
+            .arg("--context")
+            .arg(&context)
+            .args(["attach", "--sig-proxy=false", &id])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()
+    })
+    .await;
 
-    *terminal = ratatui::init();
-    terminal.clear()?;
+    resume_tui(terminal)?;
+    let _ = joined?;
     Ok(())
 }
