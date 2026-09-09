@@ -854,7 +854,7 @@ impl App {
             self.status = format!("{verb}: only in Containers view");
             return;
         }
-        if !self.marked.is_empty() {
+        if !self.marked.is_empty() && matches!(verb, "stop" | "start" | "restart") {
             let targets = mark::resolve_targets(&self.marked, &self.items);
             if targets.is_empty() {
                 mark::retain_existing(&mut self.marked, &self.items);
