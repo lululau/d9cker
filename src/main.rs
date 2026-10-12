@@ -43,13 +43,9 @@ async fn main() -> Result<()> {
     }
 
     let ctx = contexts::current_context();
-    let mut app = match App::new(tx, ctx).await {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("d9cker: failed to connect to docker: {e}");
-            std::process::exit(1);
-        }
-    };
+    // App::new captures connect failures as the disconnected state, so an
+    // error here would be genuinely fatal.
+    let mut app = App::new(tx, ctx).await?;
     app.refresh();
     app.refresh_meta();
 

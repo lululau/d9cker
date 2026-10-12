@@ -133,7 +133,12 @@ pub struct Confirm {
 
 pub struct App {
     pub tx: UnboundedSender<Msg>,
-    pub docker: Docker,
+    /// None while disconnected (startup connect failed); the TUI then only
+    /// offers the Contexts view until Enter reconnects.
+    pub docker: Option<Docker>,
+    /// Full `⚠ …` status line while `docker == None`, kept so periodic
+    /// refresh can re-show it instead of clearing the footer.
+    pub conn_error: Option<String>,
     pub should_quit: bool,
 
     pub context: String,
@@ -195,24 +200,31 @@ pub struct App {
 
 impl App {
     pub async fn new(tx: UnboundedSender<Msg>, context: String) -> anyhow::Result<Self> {
-        let host = contexts::resolve_host(&context)
-            .unwrap_or_else(|_| "unix:///var/run/docker.sock".to_string());
-        let docker = docker::connect(&host)?;
+        // A failed connect no longer aborts startup: enter the disconnected
+        // state (Contexts view + ⚠ status) and let the user switch/retry.
+        let (docker, conn_error) =
+            match contexts::resolve_host(&context).and_then(|host| docker::connect(&host)) {
+                Ok(d) => (Some(d), None),
+                Err(e) => (None, Some(format!("⚠ context '{context}': {e}"))),
+            };
+        let disconnected = conn_error.is_some();
+        let status = conn_error.clone().unwrap_or_else(|| "Loading…".into());
         Ok(App {
             tx,
             docker,
+            conn_error,
             should_quit: false,
             context,
             swarm: String::new(),
             compose_projects: 0,
-            view: View::Containers,
+            view: if disconnected { View::Contexts } else { View::Containers },
             items: Vec::new(),
             marked: HashSet::new(),
             selected: 0,
-            loading: true,
+            loading: !disconnected,
             mode: Mode::Table,
             prev_mode: Mode::Table,
-            status: "Loading…".into(),
+            status,
             filter: String::new(),
             filtering: false,
             command: String::new(),
@@ -274,10 +286,28 @@ impl App {
         }
     }
 
+    /// Clone the live connection, or (while disconnected) set the warning
+    /// status and return None. All daemon-touching verbs go through this.
+    fn docker_or_warn(&mut self) -> Option<Docker> {
+        match &self.docker {
+            Some(d) => Some(d.clone()),
+            None => {
+                self.status = self
+                    .conn_error
+                    .clone()
+                    .unwrap_or_else(|| "⚠ not connected — Enter on a context to connect".into());
+                None
+            }
+        }
+    }
+
     pub fn refresh(&mut self) {
         self.loading = true;
         let tx = self.tx.clone();
-        let docker = self.docker.clone();
+        let Some(docker) = self.docker_or_warn() else {
+            self.loading = false;
+            return;
+        };
         let view = self.view;
         let arg = self.fetch_arg();
         tokio::spawn(async move {
@@ -291,7 +321,7 @@ impl App {
 
     pub fn refresh_meta(&self) {
         let tx = self.tx.clone();
-        let docker = self.docker.clone();
+        let Some(docker) = self.docker.clone() else { return };
         tokio::spawn(async move {
             let swarm = docker::swarm_state(&docker).await;
             let compose = docker::compose_count(&docker).await;
@@ -301,7 +331,7 @@ impl App {
 
     fn fetch_volume_sizes(&self) {
         let tx = self.tx.clone();
-        let docker = self.docker.clone();
+        let Some(docker) = self.docker.clone() else { return };
         tokio::spawn(async move {
             let sizes = docker::volume_sizes(&docker).await;
             let _ = tx.send(Msg::VolumeSizes(sizes));
@@ -653,7 +683,8 @@ impl App {
         let name = it.name.clone();
         match contexts::resolve_host(&name).and_then(|h| docker::connect(&h)) {
             Ok(d) => {
-                self.docker = d;
+                self.docker = Some(d);
+                self.conn_error = None;
                 self.context = name.clone();
                 self.swarm.clear();
                 self.vol_sizes.clear();
@@ -684,7 +715,10 @@ impl App {
         };
         let id = it.id.clone();
         let title = it.name.clone();
-        let mut stream = docker::log_stream(&self.docker, self.view, &id, 500);
+        let Some(docker) = self.docker_or_warn() else {
+            return;
+        };
+        let mut stream = docker::log_stream(&docker, self.view, &id, 500);
 
         self.logs.clear();
         self.log_scroll = 0;
@@ -762,7 +796,10 @@ impl App {
         };
         let id = it.id.clone();
         let title = it.name.clone();
-        let mut stream = docker::stats_stream(&self.docker, &id);
+        let Some(docker) = self.docker_or_warn() else {
+            return;
+        };
+        let mut stream = docker::stats_stream(&docker, &id);
 
         self.stats = None;
         self.stats_title = title;
@@ -800,13 +837,15 @@ impl App {
             Some(it) => (it.name.clone(), it.id.clone()),
             None => return,
         };
+        let Some(docker) = self.docker_or_warn() else {
+            return;
+        };
         self.inspect_lines = vec!["loading…".into()];
         self.inspect_title = title;
         self.inspect_scroll = 0;
         self.hscroll = 0;
         self.mode = Mode::Inspect;
         let tx = self.tx.clone();
-        let docker = self.docker.clone();
         let kind = kind.to_string();
         tokio::spawn(async move {
             let msg = match docker::inspect(&docker, &kind, &id).await {
@@ -888,9 +927,11 @@ impl App {
     }
 
     fn run_action(&mut self, verb: String, id: String, label: String) {
+        let Some(docker) = self.docker_or_warn() else {
+            return;
+        };
         self.status = format!("{verb} {label}…");
         let tx = self.tx.clone();
-        let docker = self.docker.clone();
         tokio::spawn(async move {
             let msg = match docker::container_action(&docker, &verb, &id).await {
                 Ok(()) => Msg::Info(format!("{verb} {label} ✓")),
@@ -956,9 +997,11 @@ impl App {
     }
 
     fn run_delete(&mut self, view: View, id: String, label: String) {
+        let Some(docker) = self.docker_or_warn() else {
+            return;
+        };
         self.status = format!("removing {label}…");
         let tx = self.tx.clone();
-        let docker = self.docker.clone();
         tokio::spawn(async move {
             let msg = match docker::delete(&docker, view, &id).await {
                 Ok(()) => Msg::Info(format!("removed {label} ✓")),
@@ -970,9 +1013,11 @@ impl App {
 
     fn run_batch(&mut self, verb: String, view: View, targets: Vec<mark::Target>) {
         let n = targets.len();
+        let Some(docker) = self.docker_or_warn() else {
+            return;
+        };
         self.status = format!("{verb} 0/{n}…");
         let tx = self.tx.clone();
-        let docker = self.docker.clone();
         tokio::spawn(async move {
             let mut ok = 0usize;
             let mut first_err: Option<String> = None;
@@ -1034,9 +1079,11 @@ impl App {
             return;
         };
         let name = it.name.clone();
+        let Some(docker) = self.docker_or_warn() else {
+            return;
+        };
         self.status = format!("scaling {name}…");
         let tx = self.tx.clone();
-        let docker = self.docker.clone();
         tokio::spawn(async move {
             let msg = match docker::scale_service(&docker, &name, delta).await {
                 Ok(m) => Msg::Info(m),
@@ -1108,9 +1155,11 @@ impl App {
     }
 
     fn do_prune_images(&mut self) {
+        let Some(docker) = self.docker_or_warn() else {
+            return;
+        };
         self.status = "pruning dangling images…".into();
         let tx = self.tx.clone();
-        let docker = self.docker.clone();
         tokio::spawn(async move {
             let msg = match docker::prune_images(&docker).await {
                 Ok(m) => Msg::Info(m),
@@ -1121,9 +1170,11 @@ impl App {
     }
 
     fn do_system_prune(&mut self) {
+        let Some(docker) = self.docker_or_warn() else {
+            return;
+        };
         self.status = "system prune -a…".into();
         let tx = self.tx.clone();
-        let docker = self.docker.clone();
         tokio::spawn(async move {
             let msg = match docker::system_prune_all(&docker).await {
                 Ok(m) => Msg::Info(m),
@@ -1601,8 +1652,45 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{cmp_cells, parse_size};
+    use super::{cmp_cells, parse_size, App, Msg, View};
     use std::cmp::Ordering;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    // serialize env mutation across tests in this module (same pattern as
+    // contexts.rs, but a tokio Mutex: tests hold it across await points)
+    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Point "default" at a nonexistent socket so connect always fails eagerly.
+    fn force_bad_docker_host() {
+        std::env::set_var("DOCKER_HOST", "unix:///nonexistent-d9cker-test.sock");
+        std::env::set_var("DOCKER_CONFIG", "/nonexistent-d9cker-test-config");
+        std::env::remove_var("DOCKER_CONTEXT");
+    }
+
+    /// App in the disconnected state. Callers must hold ENV_LOCK and have
+    /// called force_bad_docker_host() first.
+    async fn disconnected_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<Msg>) {
+        let (tx, rx) = unbounded_channel();
+        let app = App::new(tx, "default".to_string()).await.unwrap();
+        assert!(app.docker.is_none(), "fixture must be disconnected");
+        (app, rx)
+    }
+
+    #[tokio::test]
+    async fn app_new_disconnected_enters_contexts_view() {
+        let _guard = ENV_LOCK.lock().await;
+        force_bad_docker_host();
+        let (app, _rx) = disconnected_app().await;
+        let e = app.conn_error.expect("startup error captured");
+        assert!(e.starts_with("⚠ context 'default'"), "got: {e}");
+        assert!(
+            e.contains("Socket not found") || e.contains("nonexistent-d9cker-test.sock"),
+            "got: {e}"
+        );
+        assert_eq!(app.view, View::Contexts);
+        assert!(!app.loading);
+        assert_eq!(app.status, e);
+    }
 
     #[test]
     fn parse_size_units() {
