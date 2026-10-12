@@ -1413,8 +1413,11 @@ mod tests {
         assert!(creds_from_config(&cfg, "quay.io/foo/bar").is_none());
     }
 
-    #[test]
-    fn list_contexts_marks_current() {
+    #[tokio::test]
+    async fn list_contexts_marks_current() {
+        // reads DOCKER_HOST/DOCKER_CONFIG via load_contexts; serialize with
+        // the other env-touching tests.
+        let _g = crate::test_util::ENV_LOCK.lock().await;
         let items = super::list_contexts("default");
         assert!(!items.is_empty(), "built-in default context always exists");
         let cur = items.iter().find(|i| i.name == "default").unwrap();

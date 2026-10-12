@@ -5,6 +5,8 @@ mod contexts;
 mod docker;
 mod mark;
 mod ssh_wrap;
+#[cfg(test)]
+mod test_util;
 mod ui;
 
 use anyhow::Result;

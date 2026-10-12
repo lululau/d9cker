@@ -221,10 +221,8 @@ pub async fn read_file(host: &str, path: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{load_d9cker_config, save_last_context, sh_quote, ssh_target};
-    use std::sync::Mutex;
-
-    // serialize env mutation across tests in this module
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // process-wide env lock shared with the other env-touching tests
+    use crate::test_util::ENV_LOCK;
 
     #[test]
     fn ssh_target_parses() {
@@ -245,9 +243,9 @@ mod tests {
         assert_eq!(sh_quote("/it's/x.yml"), "'/it'\\''s/x.yml'");
     }
 
-    #[test]
-    fn last_context_roundtrip() {
-        let _guard = ENV_LOCK.lock().unwrap();
+    #[tokio::test]
+    async fn last_context_roundtrip() {
+        let _guard = ENV_LOCK.lock().await;
         let dir = std::env::temp_dir().join(format!("d9cker-cfg-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

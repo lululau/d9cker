@@ -135,9 +135,11 @@ pub struct App {
     pub tx: UnboundedSender<Msg>,
     /// None while disconnected (startup connect failed); the TUI then only
     /// offers the Contexts view until Enter reconnects.
+    /// Invariant: `conn_error.is_some() ⟺ docker.is_none()`.
     pub docker: Option<Docker>,
-    /// Full `⚠ …` status line while `docker == None`, kept so periodic
-    /// refresh can re-show it instead of clearing the footer.
+    /// Full `⚠ …` status line while `docker == None` (see the invariant on
+    /// `docker`), kept so periodic refresh can re-show it instead of
+    /// clearing the footer.
     pub conn_error: Option<String>,
     pub should_quit: bool,
 
@@ -286,16 +288,27 @@ impl App {
         }
     }
 
+    /// Disconnect-warning footer text: the stored connect error, or (if the
+    /// invariant `conn_error.is_some() ⟺ docker.is_none()` is ever violated)
+    /// a generic hint.
+    fn conn_status_text(&self) -> String {
+        self.conn_error
+            .clone()
+            .unwrap_or_else(|| "⚠ not connected — Enter on a context to connect".into())
+    }
+
+    /// Show the disconnect warning in the footer.
+    fn set_conn_status(&mut self) {
+        self.status = self.conn_status_text();
+    }
+
     /// Clone the live connection, or (while disconnected) set the warning
     /// status and return None. All daemon-touching verbs go through this.
     fn docker_or_warn(&mut self) -> Option<Docker> {
         match &self.docker {
             Some(d) => Some(d.clone()),
             None => {
-                self.status = self
-                    .conn_error
-                    .clone()
-                    .unwrap_or_else(|| "⚠ not connected — Enter on a context to connect".into());
+                self.set_conn_status();
                 None
             }
         }
@@ -304,8 +317,8 @@ impl App {
     pub fn refresh(&mut self) {
         self.loading = true;
         let tx = self.tx.clone();
-        let Some(docker) = self.docker_or_warn() else {
-            self.loading = false;
+        let Some(docker) = self.docker.clone() else {
+            self.refresh_disconnected();
             return;
         };
         let view = self.view;
@@ -317,6 +330,22 @@ impl App {
             };
             let _ = tx.send(msg);
         });
+    }
+
+    /// `docker == None` branch of refresh: the Contexts table is read from
+    /// disk, everything else just re-shows the stored connect error.
+    fn refresh_disconnected(&mut self) {
+        self.loading = false;
+        if self.view == View::Contexts {
+            let arg = self.fetch_arg();
+            let _ = self.tx.send(Msg::Data {
+                view: View::Contexts,
+                arg: arg.clone(),
+                items: docker::list_contexts(&arg),
+            });
+            return;
+        }
+        self.set_conn_status();
     }
 
     pub fn refresh_meta(&self) {
@@ -379,8 +408,9 @@ impl App {
                         }
                         None => self.clamp_selection(),
                     }
-                    // clear stale status so the footer falls back to key hints
-                    self.status.clear();
+                    // Clear stale status so the footer falls back to key
+                    // hints — but keep the connect warning while disconnected.
+                    self.status = self.conn_error.clone().unwrap_or_default();
                 }
             }
             Msg::Meta { swarm, compose } => {
@@ -696,6 +726,9 @@ impl App {
                 self.refresh_meta();
                 self.switch_view(View::Containers);
             }
+            // TODO(task4): on a failed switch, update conn_error and the
+            // `conn_error.is_some() ⟺ docker.is_none()` invariant so
+            // `refresh_disconnected`/`set_conn_status` show the fresh error.
             Err(e) => self.status = format!("⚠ context '{name}': {e}"),
         }
     }
@@ -1653,22 +1686,22 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{cmp_cells, parse_size, App, Msg, View};
+    use crate::test_util::{EnvGuard, ENV_LOCK};
     use std::cmp::Ordering;
     use tokio::sync::mpsc::unbounded_channel;
 
-    // serialize env mutation across tests in this module (same pattern as
-    // contexts.rs, but a tokio Mutex: tests hold it across await points)
-    static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
     /// Point "default" at a nonexistent socket so connect always fails eagerly.
-    fn force_bad_docker_host() {
-        std::env::set_var("DOCKER_HOST", "unix:///nonexistent-d9cker-test.sock");
-        std::env::set_var("DOCKER_CONFIG", "/nonexistent-d9cker-test-config");
-        std::env::remove_var("DOCKER_CONTEXT");
+    /// The returned guard restores env on drop; hold it for the whole test.
+    fn force_bad_docker_host() -> EnvGuard {
+        EnvGuard::apply(&[
+            ("DOCKER_HOST", Some("unix:///nonexistent-d9cker-test.sock")),
+            ("DOCKER_CONFIG", Some("/nonexistent-d9cker-test-config")),
+            ("DOCKER_CONTEXT", None),
+        ])
     }
 
-    /// App in the disconnected state. Callers must hold ENV_LOCK and have
-    /// called force_bad_docker_host() first.
+    /// App in the disconnected state. Callers must hold ENV_LOCK and keep the
+    /// env guard from force_bad_docker_host() alive.
     async fn disconnected_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<Msg>) {
         let (tx, rx) = unbounded_channel();
         let app = App::new(tx, "default".to_string()).await.unwrap();
@@ -1679,7 +1712,7 @@ mod tests {
     #[tokio::test]
     async fn app_new_disconnected_enters_contexts_view() {
         let _guard = ENV_LOCK.lock().await;
-        force_bad_docker_host();
+        let _env = force_bad_docker_host();
         let (app, _rx) = disconnected_app().await;
         let e = app.conn_error.expect("startup error captured");
         assert!(e.starts_with("⚠ context 'default'"), "got: {e}");
@@ -1690,6 +1723,64 @@ mod tests {
         assert_eq!(app.view, View::Contexts);
         assert!(!app.loading);
         assert_eq!(app.status, e);
+    }
+
+    #[tokio::test]
+    async fn disconnected_refresh_contexts_lists_without_daemon() {
+        let _guard = ENV_LOCK.lock().await;
+        let _env = force_bad_docker_host();
+        let (mut app, mut rx) = disconnected_app().await;
+        app.refresh();
+        match rx.recv().await {
+            Some(Msg::Data {
+                view: View::Contexts,
+                items,
+                ..
+            }) => {
+                assert!(items.iter().any(|i| i.name == "default"));
+            }
+            other => panic!("expected Contexts data, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnected_refresh_other_views_only_warns() {
+        let _guard = ENV_LOCK.lock().await;
+        let _env = force_bad_docker_host();
+        let (mut app, mut rx) = disconnected_app().await;
+        app.view = View::Containers;
+        app.refresh();
+        let r = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+        assert!(r.is_err(), "must not emit a daemon fetch: {r:?}");
+        assert!(!app.loading, "spinner must not hang");
+        assert!(app.status.starts_with("⚠"));
+    }
+
+    #[tokio::test]
+    async fn disconnected_data_keeps_warning_status() {
+        let _guard = ENV_LOCK.lock().await;
+        let _env = force_bad_docker_host();
+        let (mut app, _rx) = disconnected_app().await;
+        let arg = app.fetch_arg();
+        let view = app.view;
+        app.on_msg(Msg::Data { view, arg, items: vec![] });
+        assert_eq!(app.status, app.conn_error.clone().unwrap());
+    }
+
+    #[tokio::test]
+    async fn docker_or_warn_sets_status_when_disconnected() {
+        let _guard = ENV_LOCK.lock().await;
+        let _env = force_bad_docker_host();
+        let (mut app, _rx) = disconnected_app().await;
+        assert!(app.docker_or_warn().is_none());
+        assert!(app.status.starts_with("⚠"));
+        // invariant-violating state (docker None AND conn_error None): the
+        // fallback text must still show, exactly as conn_status_text produces.
+        app.conn_error = None;
+        app.status.clear();
+        app.docker_or_warn();
+        assert_eq!(app.status, app.conn_status_text());
+        assert!(app.status.contains("not connected"));
     }
 
     #[test]
