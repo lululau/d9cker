@@ -63,6 +63,7 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
     };
     let cols = Layout::horizontal([Constraint::Min(1), Constraint::Length(8)]).split(area);
 
+    let disconnected = app.conn_error.is_some();
     let mut left = vec![
         Span::styled(
             " d9cker ",
@@ -71,8 +72,14 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
         Span::raw("  "),
         Span::styled(app.context.clone(), Style::default().fg(ACCENT).bold()),
         Span::raw("  "),
-        Span::styled("●", Style::default().fg(swarm_color).bold()),
-        Span::styled(
+        if disconnected {
+            Span::styled("● disconnected", Style::default().fg(Color::Red).bold())
+        } else {
+            Span::styled("●", Style::default().fg(swarm_color).bold())
+        },
+    ];
+    if !disconnected {
+        left.push(Span::styled(
             format!(
                 " swarm {}",
                 if app.swarm.is_empty() {
@@ -82,8 +89,8 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
                 }
             ),
             Style::default().fg(swarm_color),
-        ),
-    ];
+        ));
+    }
     if app.view == View::Containers {
         let (txt, col) = if app.show_all {
             ("  all", Color::Yellow)

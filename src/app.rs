@@ -42,6 +42,11 @@ fn humanize_error(e: &str) -> String {
     }
 }
 
+/// The one way a connection failure becomes user-visible text.
+fn conn_warning(name: &str, err: &str) -> String {
+    format!("⚠ context '{name}': {err}")
+}
+
 /// Parse a human size like "119.3MB" / "6379" into a byte count for sorting.
 fn parse_size(s: &str) -> Option<f64> {
     let s = s.trim();
@@ -207,7 +212,7 @@ impl App {
         let (docker, conn_error) =
             match contexts::resolve_host(&context).and_then(|host| docker::connect(&host)) {
                 Ok(d) => (Some(d), None),
-                Err(e) => (None, Some(format!("⚠ context '{context}': {e}"))),
+                Err(e) => (None, Some(conn_warning(&context, &e.to_string()))),
             };
         let disconnected = conn_error.is_some();
         let status = conn_error.clone().unwrap_or_else(|| "Loading…".into());
@@ -726,10 +731,17 @@ impl App {
                 self.refresh_meta();
                 self.switch_view(View::Containers);
             }
-            // TODO(task4): on a failed switch, update conn_error and the
-            // `conn_error.is_some() ⟺ docker.is_none()` invariant so
-            // `refresh_disconnected`/`set_conn_status` show the fresh error.
-            Err(e) => self.status = format!("⚠ context '{name}': {e}"),
+            Err(e) => {
+                let msg = conn_warning(&name, &e.to_string());
+                // While already disconnected, keep the freshest error so the
+                // periodic refresh re-shows the last attempted context; while
+                // connected the old context still works, so conn_error stays
+                // None (invariant: conn_error.is_some() ⟺ docker.is_none()).
+                if self.docker.is_none() {
+                    self.conn_error = Some(msg.clone());
+                }
+                self.status = msg;
+            }
         }
     }
 
@@ -1686,6 +1698,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{cmp_cells, parse_size, App, Msg, View};
+    use crate::docker;
     use crate::test_util::{EnvGuard, ENV_LOCK};
     use std::cmp::Ordering;
     use tokio::sync::mpsc::unbounded_channel;
@@ -1813,5 +1826,95 @@ mod tests {
         idx.sort_by(|&i, &j| cmp_cells(col[i], col[j]));
         let sorted: Vec<&str> = idx.iter().map(|&i| col[i]).collect();
         assert_eq!(sorted, ["12.4MB", "119.3MB", "900MB", "1.5GB"]);
+    }
+
+    /// Write a `deadbeef` context pointing at a nonexistent socket into the
+    /// given (temp) DOCKER_CONFIG dir.
+    fn write_deadbeef_context(config_dir: &std::path::Path) {
+        let meta_dir = config_dir.join("contexts").join("meta").join("deadbeef");
+        std::fs::create_dir_all(&meta_dir).unwrap();
+        std::fs::write(
+            meta_dir.join("meta.json"),
+            r#"{"Name":"deadbeef","Metadata":{"Description":"test"},"Endpoints":{"docker":{"Host":"unix:///nonexistent-deadbeef.sock"}}}"#,
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_switch_while_disconnected_refreshes_error() {
+        let _guard = ENV_LOCK.lock().await;
+        // Writable temp DOCKER_CONFIG so we can register a fake context.
+        let dir = std::env::temp_dir().join(format!("d9cker-app-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_deadbeef_context(&dir);
+        let _env = EnvGuard::apply(&[
+            ("DOCKER_HOST", Some("unix:///nonexistent-d9cker-test.sock")),
+            ("DOCKER_CONFIG", Some(dir.to_str().unwrap())),
+            ("DOCKER_CONTEXT", None),
+        ]);
+
+        let (mut app, _rx) = disconnected_app().await;
+        let startup_err = app.conn_error.clone().unwrap();
+        assert!(
+            startup_err.contains("context 'default'"),
+            "got: {startup_err}"
+        );
+
+        // Seed the Contexts table locally (disk store, not daemon).
+        let items = docker::list_contexts("default");
+        app.selected = items.iter().position(|i| i.name == "deadbeef").unwrap();
+        let arg = app.fetch_arg();
+        let view = app.view;
+        app.on_msg(Msg::Data { view, arg, items });
+
+        // Enter on deadbeef: connect fails; while disconnected, conn_error must
+        // reflect the *attempted* context so the 3s ticker re-shows the fresh one.
+        app.switch_context();
+        let e = app.conn_error.clone().unwrap();
+        assert!(e.contains("⚠ context 'deadbeef'"), "got: {e}");
+        assert!(app.status.contains("⚠ context 'deadbeef'"));
+
+        // cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The connected half of the invariant: a failed switch while connected
+    /// must NOT set conn_error (docker stays Some — the old context still works).
+    #[tokio::test]
+    async fn failed_switch_while_connected_keeps_conn_error_none() {
+        let _guard = ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("d9cker-conn-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_deadbeef_context(&dir);
+        // tcp:// endpoints connect lazily (no probe), so App::new yields a live
+        // Docker handle even with no daemon behind it.
+        let _env = EnvGuard::apply(&[
+            ("DOCKER_HOST", Some("tcp://127.0.0.1:1")),
+            ("DOCKER_CONFIG", Some(dir.to_str().unwrap())),
+            ("DOCKER_CONTEXT", None),
+        ]);
+
+        let (tx, _rx) = unbounded_channel();
+        let mut app = App::new(tx, "default".to_string()).await.unwrap();
+        assert!(app.docker.is_some(), "lazy tcp connect");
+        assert!(app.conn_error.is_none());
+
+        // Enter on deadbeef (nonexistent unix socket): connect fails eagerly.
+        app.view = View::Contexts;
+        let items = docker::list_contexts("default");
+        app.selected = items.iter().position(|i| i.name == "deadbeef").unwrap();
+        let arg = app.fetch_arg();
+        let view = app.view;
+        app.on_msg(Msg::Data { view, arg, items });
+        app.switch_context();
+
+        assert!(app.conn_error.is_none());
+        assert!(app.docker.is_some(), "old context still connected");
+        assert!(app.status.contains("⚠ context 'deadbeef'"));
+
+        // cleanup
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
