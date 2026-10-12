@@ -90,6 +90,8 @@ pub enum Msg {
     Inspect(String),
     Error(String),
     Info(String),
+    /// status-line update without a list refresh (batch progress ticks)
+    Status(String),
     BatchDone {
         verb: String,
         summary: String,
@@ -115,7 +117,7 @@ pub enum PendingAction {
         label: String,
     },
     Batch {
-        verb: String, // "delete" | "stop" | "restart" | "start"
+        verb: String, // "delete" | "stop" | "restart" | "start" | "pull"
         view: View,
         targets: Vec<mark::Target>,
     },
@@ -414,6 +416,7 @@ impl App {
                     self.refresh();
                 }
             }
+            Msg::Status(m) => self.status = m,
             Msg::BatchDone {
                 verb,
                 summary,
@@ -974,9 +977,14 @@ impl App {
             let mut ok = 0usize;
             let mut first_err: Option<String> = None;
             let mut succeeded_ids = Vec::new();
-            for t in &targets {
+            for (i, t) in targets.iter().enumerate() {
+                if verb == "pull" {
+                    let _ = tx.send(Msg::Status(format!("pull {}/{n} {}…", i + 1, t.label)));
+                }
                 let res = if verb == "delete" {
                     docker::delete(&docker, view, &t.id).await
+                } else if verb == "pull" {
+                    docker::pull_image(&docker, &t.label).await.map(|_| ())
                 } else {
                     docker::container_action(&docker, &verb, &t.id).await
                 };
@@ -1050,6 +1058,52 @@ impl App {
             prompt: "SYSTEM prune -a: unused containers/networks/images + build cache (NOT volumes)"
                 .into(),
             action: PendingAction::SystemPrune,
+        });
+    }
+
+    /// `:pull` — batch-pull marked images, or the current row if none marked.
+    /// Downloads a fresh copy of repo:tag only; running containers keep the
+    /// image they were created from until recreated.
+    fn request_pull(&mut self) {
+        if self.view != View::Images {
+            self.status = "pull: only in Images view".into();
+            return;
+        }
+        if !self.marked.is_empty() {
+            let targets = mark::resolve_targets(&self.marked, &self.items);
+            if targets.is_empty() {
+                mark::retain_existing(&mut self.marked, &self.items);
+                self.status = "pull: marked rows gone — marks cleared".into();
+                return;
+            }
+            let n = targets.len();
+            self.confirm = Some(Confirm {
+                prompt: format!("pull {n} image(s)? (download only, containers unaffected)"),
+                action: PendingAction::Batch {
+                    verb: "pull".into(),
+                    view: self.view,
+                    targets,
+                },
+            });
+            return;
+        }
+        let Some(it) = self.selected_item() else {
+            return;
+        };
+        if it.header || it.name.starts_with("<none>") {
+            self.status = "pull: untagged image has no repo:tag to pull".into();
+            return;
+        }
+        self.confirm = Some(Confirm {
+            prompt: format!("pull '{}'? (download only, containers unaffected)", it.name),
+            action: PendingAction::Batch {
+                verb: "pull".into(),
+                view: self.view,
+                targets: vec![mark::Target {
+                    id: it.id.clone(),
+                    label: it.name.clone(),
+                }],
+            },
         });
     }
 
@@ -1395,6 +1449,7 @@ impl App {
             "st" | "stack" | "stacks" => self.switch_view(View::Stacks),
             "ctx" | "context" | "contexts" => self.switch_view(View::Contexts),
             "q" | "quit" => self.should_quit = true,
+            "pull" => self.request_pull(),
             "prune" => self.request_prune(),
             "sysprune" => self.request_sysprune(),
             "pause" => self.action("pause"),

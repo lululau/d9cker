@@ -60,7 +60,7 @@ struct D9ckerConfig {
     last_context: String,
 }
 
-fn docker_dir() -> PathBuf {
+pub(crate) fn docker_dir() -> PathBuf {
     if let Ok(d) = std::env::var("DOCKER_CONFIG") {
         return PathBuf::from(d);
     }

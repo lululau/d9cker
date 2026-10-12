@@ -175,6 +175,7 @@ name = "d9cker"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "base64",
  "bollard",
  "crossterm",
  "futures",

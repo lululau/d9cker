@@ -7,14 +7,17 @@
 
 use crate::contexts;
 use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use bollard::auth::DockerCredentials;
 use bollard::query_parameters::{
-    DataUsageOptions, InspectContainerOptions, InspectNetworkOptions, InspectServiceOptions,
-    ListContainersOptionsBuilder, ListImagesOptionsBuilder, ListNetworksOptions, ListNodesOptions,
-    ListServicesOptions, ListTasksOptionsBuilder, ListVolumesOptions, LogsOptionsBuilder,
-    PruneBuildOptions, PruneContainersOptions, PruneImagesOptions, PruneImagesOptionsBuilder,
-    PruneNetworksOptions, RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder,
-    RemoveVolumeOptionsBuilder, RestartContainerOptions, StartContainerOptions,
-    StatsOptionsBuilder, StopContainerOptions, UpdateServiceOptionsBuilder,
+    CreateImageOptionsBuilder, DataUsageOptions, InspectContainerOptions, InspectNetworkOptions,
+    InspectServiceOptions, ListContainersOptionsBuilder, ListImagesOptionsBuilder,
+    ListNetworksOptions, ListNodesOptions, ListServicesOptions, ListTasksOptionsBuilder,
+    ListVolumesOptions, LogsOptionsBuilder, PruneBuildOptions, PruneContainersOptions,
+    PruneImagesOptions, PruneImagesOptionsBuilder, PruneNetworksOptions,
+    RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder, RemoveVolumeOptionsBuilder,
+    RestartContainerOptions, StartContainerOptions, StatsOptionsBuilder, StopContainerOptions,
+    UpdateServiceOptionsBuilder,
 };
 use bollard::{Docker, API_DEFAULT_VERSION};
 use futures::stream::{BoxStream, StreamExt};
@@ -252,6 +255,8 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
 
             struct Row {
                 name: String,
+                /// full `repo` (namespace included) — Item.name and pulls need it
+                repo: String,
                 tag: String,
                 id: String,
                 size: String,
@@ -275,6 +280,7 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                 };
                 groups.entry(group).or_default().push(Row {
                     name: short_name,
+                    repo,
                     tag,
                     id: im.id,
                     size: human_size(im.size),
@@ -299,7 +305,7 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                 });
                 for r in rows {
                     items.push(Item {
-                        name: format!("{}:{}", r.name, r.tag),
+                        name: format!("{}:{}", r.repo, r.tag),
                         cells: vec![
                             format!("  {}", r.name),
                             r.tag,
@@ -1238,4 +1244,166 @@ pub async fn compose_count(docker: &Docker) -> usize {
         }
     }
     set.len()
+}
+
+// ---- pull --------------------------------------------------------------
+
+/// Split a display `repo:tag` into pull params. A colon whose tail contains
+/// `/` is a registry port, not a tag (`localhost:5000/foo` has no tag).
+fn split_repo_tag(repo_tag: &str) -> (String, String) {
+    match repo_tag.rsplit_once(':') {
+        Some((repo, tag)) if !tag.is_empty() && !tag.contains('/') => {
+            (repo.to_string(), tag.to_string())
+        }
+        _ => (repo_tag.to_string(), "latest".to_string()),
+    }
+}
+
+/// Registry a repo pulls from: a dotted/colon'd/localhost first path segment
+/// is a registry host, otherwise Docker Hub.
+fn registry_host(repo: &str) -> String {
+    match repo.split_once('/') {
+        Some((first, _)) if first.contains('.') || first.contains(':') || first == "localhost" => {
+            first.to_string()
+        }
+        _ => "docker.io".to_string(),
+    }
+}
+
+/// Map an `auths` key (`https://index.docker.io/v1/`, `ghcr.io/`, `quay.io`)
+/// onto the same form `registry_host` produces.
+fn normalize_registry_key(key: &str) -> String {
+    let k = key
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    let host = k.split('/').next().unwrap_or(k);
+    if host == "index.docker.io" {
+        "docker.io".to_string()
+    } else {
+        host.to_string()
+    }
+}
+
+/// Credentials for `repo` from a parsed `~/.docker/config.json` (pure).
+/// Supports `username`/`password` or a base64 `user:pass` in `auth`;
+/// `credsStore` helpers are deliberately not invoked.
+fn creds_from_config(cfg: &Value, repo: &str) -> Option<DockerCredentials> {
+    let host = registry_host(repo);
+    let auths = cfg.get("auths")?.as_object()?;
+    let (key, entry) = auths
+        .iter()
+        .find(|(k, _)| normalize_registry_key(k) == host)?;
+    let user = entry.get("username").and_then(Value::as_str);
+    let pass = entry.get("password").and_then(Value::as_str);
+    let (username, password) = match (user, pass) {
+        (Some(u), Some(p)) => (u.to_string(), p.to_string()),
+        _ => {
+            let auth = entry.get("auth").and_then(Value::as_str)?;
+            let decoded = STANDARD.decode(auth).ok()?;
+            let decoded = String::from_utf8(decoded).ok()?;
+            let (u, p) = decoded.split_once(':')?;
+            (u.to_string(), p.to_string())
+        }
+    };
+    Some(DockerCredentials {
+        username: Some(username),
+        password: Some(password),
+        serveraddress: Some(key.clone()),
+        ..Default::default()
+    })
+}
+
+/// Credentials for `repo` from `$DOCKER_CONFIG`/`~/.docker/config.json`, if any.
+fn registry_credentials(repo: &str) -> Option<DockerCredentials> {
+    let text = std::fs::read_to_string(contexts::docker_dir().join("config.json")).ok()?;
+    creds_from_config(&serde_json::from_str::<Value>(&text).ok()?, repo)
+}
+
+/// ≈ `docker pull repo:tag` — downloads only, never touches containers.
+/// Returns the daemon's terminal status ("Image is up to date" /
+/// "Downloaded newer image for …") as a one-line summary.
+pub async fn pull_image(docker: &Docker, repo_tag: &str) -> Result<String> {
+    let (repo, tag) = split_repo_tag(repo_tag);
+    if repo == "<none>" {
+        return Err(anyhow!("untagged image has no repo:tag to pull"));
+    }
+    let opts = CreateImageOptionsBuilder::default()
+        .from_image(&repo)
+        .tag(&tag)
+        .build();
+    let creds = registry_credentials(&repo);
+    let mut stream = docker.create_image(Some(opts), None, creds);
+    let mut summary = String::new();
+    while let Some(ev) = stream.next().await {
+        let ev = ev?;
+        if let Some(msg) = ev
+            .error_detail
+            .as_ref()
+            .and_then(|ed| ed.message.clone())
+            .filter(|s| !s.is_empty())
+        {
+            return Err(anyhow!(msg));
+        }
+        if let Some(s) = ev.status.as_deref().filter(|s| !s.is_empty()) {
+            // the last status event is the tag-level verdict
+            summary = s.to_string();
+        }
+    }
+    if summary.is_empty() {
+        summary = format!("pulled {repo_tag}");
+    }
+    Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_repo_tag_handles_registry_ports() {
+        assert_eq!(
+            split_repo_tag("nginx:latest"),
+            ("nginx".into(), "latest".into())
+        );
+        assert_eq!(split_repo_tag("nginx"), ("nginx".into(), "latest".into()));
+        assert_eq!(
+            split_repo_tag("localhost:5000/foo"),
+            ("localhost:5000/foo".into(), "latest".into())
+        );
+        assert_eq!(
+            split_repo_tag("localhost:5000/foo:v2"),
+            ("localhost:5000/foo".into(), "v2".into())
+        );
+        assert_eq!(
+            split_repo_tag("ghcr.io/foo/bar:1.2"),
+            ("ghcr.io/foo/bar".into(), "1.2".into())
+        );
+    }
+
+    #[test]
+    fn registry_host_detects_custom_registries() {
+        assert_eq!(registry_host("nginx"), "docker.io");
+        assert_eq!(registry_host("someuser/repo"), "docker.io");
+        assert_eq!(registry_host("ghcr.io/foo/bar"), "ghcr.io");
+        assert_eq!(registry_host("localhost:5000/foo"), "localhost:5000");
+        assert_eq!(registry_host("localhost/foo"), "localhost");
+    }
+
+    #[test]
+    fn creds_match_hub_and_named_registries() {
+        let cfg: Value = serde_json::json!({
+            "auths": {
+                "https://index.docker.io/v1/": { "auth": base64::engine::general_purpose::STANDARD.encode("alice:secret") },
+                "ghcr.io": { "username": "u", "password": "p" },
+            }
+        });
+        let hub = creds_from_config(&cfg, "nginx").unwrap();
+        assert_eq!(hub.username.as_deref(), Some("alice"));
+        assert_eq!(hub.password.as_deref(), Some("secret"));
+        let gh = creds_from_config(&cfg, "ghcr.io/foo/bar:latest").unwrap();
+        assert_eq!(gh.username.as_deref(), Some("u"));
+        assert_eq!(gh.password.as_deref(), Some("p"));
+        assert!(creds_from_config(&cfg, "quay.io/foo/bar").is_none());
+    }
 }

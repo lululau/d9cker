@@ -674,7 +674,7 @@ fn view_hint(view: View) -> &'static str {
             "Enter logs · p peek · i inspect · t stats · a all/running · s stop · r restart · S start · e exec · x del · m mark · M all · U none · T invert"
         }
         View::Images => {
-            "i inspect · x del · :prune · :sysprune · m mark · M all · U none · T invert"
+            "i inspect · x del · :pull · :prune · :sysprune · m mark · M all · U none · T invert"
         }
         View::Services => "Enter tasks · l logs · i inspect · +/- scale",
         View::Nodes => "i inspect",
@@ -707,7 +707,7 @@ fn render_help(f: &mut Frame, area: Rect) {
         ),
         help_line(
             "  : cmd",
-            "co, im, svc, stacks, nodes, ctx, prune, sysprune, q",
+            "co, im, svc, stacks, nodes, ctx, pull, prune, sysprune, q",
         ),
         help_line("  /", "filter rows   (Esc clears)"),
         help_line("  o / O", "cycle sort column / reverse direction"),
@@ -734,6 +734,10 @@ fn render_help(f: &mut Frame, area: Rect) {
         help_line("  x", "delete resource (container/image/volume/network)"),
         help_line("  + / -", "scale service up / down (Services)"),
         help_line("  A", "attach to container (Ctrl-P Ctrl-Q to detach)"),
+        help_line(
+            "  :pull",
+            "pull marked images (Images; download only — containers keep their old image)",
+        ),
         help_line("  :prune", "prune dangling images"),
         help_line(
             "  :sysprune",
