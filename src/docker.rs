@@ -197,6 +197,33 @@ pub fn connect(host: &str) -> Result<Docker> {
 
 // ---- listing -----------------------------------------------------------
 
+/// Context rows from the on-disk store — no daemon connection required.
+/// `current` is the active context name, marked with ●.
+pub fn list_contexts(current: &str) -> Vec<Item> {
+    contexts::load_contexts()
+        .into_iter()
+        .map(|c| {
+            let is_cur = c.name == current;
+            let cells = vec![
+                if is_cur {
+                    "●".to_string()
+                } else {
+                    " ".to_string()
+                },
+                c.name.clone(),
+                c.description,
+                c.host,
+            ];
+            Item {
+                id: c.name.clone(),
+                name: c.name,
+                cells,
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
 /// List items for a view. `arg` = current-context name (Contexts) or service
 /// name (ServiceTasks).
 pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
@@ -664,28 +691,7 @@ pub async fn list(docker: &Docker, view: View, arg: &str) -> Result<Vec<Item>> {
                 })
                 .collect()
         }
-        View::Contexts => contexts::load_contexts()
-            .into_iter()
-            .map(|c| {
-                let current = c.name == arg;
-                let cells = vec![
-                    if current {
-                        "●".to_string()
-                    } else {
-                        " ".to_string()
-                    },
-                    c.name.clone(),
-                    c.description,
-                    c.host,
-                ];
-                Item {
-                    id: c.name.clone(),
-                    name: c.name,
-                    cells,
-                    ..Default::default()
-                }
-            })
-            .collect(),
+        View::Contexts => list_contexts(arg),
     };
     Ok(items)
 }
@@ -1405,5 +1411,14 @@ mod tests {
         assert_eq!(gh.username.as_deref(), Some("u"));
         assert_eq!(gh.password.as_deref(), Some("p"));
         assert!(creds_from_config(&cfg, "quay.io/foo/bar").is_none());
+    }
+
+    #[test]
+    fn list_contexts_marks_current() {
+        let items = super::list_contexts("default");
+        assert!(!items.is_empty(), "built-in default context always exists");
+        let cur = items.iter().find(|i| i.name == "default").unwrap();
+        assert_eq!(cur.cells[0], "●");
+        assert_eq!(cur.id, "default");
     }
 }
