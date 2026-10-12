@@ -221,8 +221,8 @@ pub async fn read_file(host: &str, path: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{load_d9cker_config, save_last_context, sh_quote, ssh_target};
-    // process-wide env lock shared with the other env-touching tests
-    use crate::test_util::ENV_LOCK;
+    // process-wide env lock + RAII restore shared with the other env tests
+    use crate::test_util::{EnvGuard, ENV_LOCK};
 
     #[test]
     fn ssh_target_parses() {
@@ -249,11 +249,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("d9cker-cfg-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        // EnvGuard restores XDG_CONFIG_HOME even if the body panics.
+        let _env = EnvGuard::apply(&[("XDG_CONFIG_HOME", Some(dir.to_str().unwrap()))]);
         save_last_context("lx").unwrap();
         let cfg = load_d9cker_config();
         assert_eq!(cfg.last_context, "lx");
+        // cleanup
         let _ = std::fs::remove_dir_all(&dir);
-        std::env::remove_var("XDG_CONFIG_HOME");
     }
 }

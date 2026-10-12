@@ -1828,14 +1828,16 @@ mod tests {
         assert_eq!(sorted, ["12.4MB", "119.3MB", "900MB", "1.5GB"]);
     }
 
-    /// Write a `deadbeef` context pointing at a nonexistent socket into the
+    /// Write a fake context `name` (meta.json) pointing at `host` into the
     /// given (temp) DOCKER_CONFIG dir.
-    fn write_deadbeef_context(config_dir: &std::path::Path) {
-        let meta_dir = config_dir.join("contexts").join("meta").join("deadbeef");
+    fn write_fake_context(config_dir: &std::path::Path, name: &str, host: &str) {
+        let meta_dir = config_dir.join("contexts").join("meta").join(name);
         std::fs::create_dir_all(&meta_dir).unwrap();
         std::fs::write(
             meta_dir.join("meta.json"),
-            r#"{"Name":"deadbeef","Metadata":{"Description":"test"},"Endpoints":{"docker":{"Host":"unix:///nonexistent-deadbeef.sock"}}}"#,
+            format!(
+                r#"{{"Name":"{name}","Metadata":{{"Description":"test"}},"Endpoints":{{"docker":{{"Host":"{host}"}}}}}}"#
+            ),
         )
         .unwrap();
     }
@@ -1847,7 +1849,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("d9cker-app-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        write_deadbeef_context(&dir);
+        write_fake_context(&dir, "deadbeef", "unix:///nonexistent-deadbeef.sock");
         let _env = EnvGuard::apply(&[
             ("DOCKER_HOST", Some("unix:///nonexistent-d9cker-test.sock")),
             ("DOCKER_CONFIG", Some(dir.to_str().unwrap())),
@@ -1887,7 +1889,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("d9cker-conn-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        write_deadbeef_context(&dir);
+        write_fake_context(&dir, "deadbeef", "unix:///nonexistent-deadbeef.sock");
         // tcp:// endpoints connect lazily (no probe), so App::new yields a live
         // Docker handle even with no daemon behind it.
         let _env = EnvGuard::apply(&[
@@ -1913,6 +1915,44 @@ mod tests {
         assert!(app.conn_error.is_none());
         assert!(app.docker.is_some(), "old context still connected");
         assert!(app.status.contains("⚠ context 'deadbeef'"));
+
+        // cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Recovery path: a successful switch from the disconnected state clears
+    /// the error, reconnects, and lands on Containers (lazy tcp:// handle
+    /// stands in for a live daemon).
+    #[tokio::test]
+    async fn switch_context_success_from_disconnected_recovers() {
+        let _guard = ENV_LOCK.lock().await;
+        let dir = std::env::temp_dir().join(format!("d9cker-recover-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_fake_context(&dir, "livectx", "tcp://127.0.0.1:1");
+        let _env = EnvGuard::apply(&[
+            ("DOCKER_HOST", Some("unix:///nonexistent-d9cker-test.sock")),
+            ("DOCKER_CONFIG", Some(dir.to_str().unwrap())),
+            ("DOCKER_CONTEXT", None),
+            // save_last_context writes here; keep it off the real ~/.config.
+            ("XDG_CONFIG_HOME", Some(dir.to_str().unwrap())),
+        ]);
+
+        let (mut app, _rx) = disconnected_app().await;
+        assert!(app.conn_error.is_some());
+
+        // Seed the Contexts table and switch to livectx.
+        let items = docker::list_contexts("default");
+        app.selected = items.iter().position(|i| i.name == "livectx").unwrap();
+        let arg = app.fetch_arg();
+        let view = app.view;
+        app.on_msg(Msg::Data { view, arg, items });
+        app.switch_context();
+
+        assert!(app.conn_error.is_none());
+        assert!(app.docker.is_some());
+        assert_eq!(app.context, "livectx");
+        assert_eq!(app.view, View::Containers);
 
         // cleanup
         let _ = std::fs::remove_dir_all(&dir);
