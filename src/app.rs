@@ -1459,6 +1459,7 @@ impl App {
             // h / l switch tabs (vim-style); ←/→ scroll the table horizontally
             KeyCode::Char('l') => self.next_view(),
             KeyCode::Char('h') => self.prev_view(),
+            KeyCode::Char('C') => self.switch_view(View::Contexts),
             KeyCode::Right => self.hscroll += HSTEP,
             KeyCode::Left => self.hscroll = self.hscroll.saturating_sub(HSTEP),
             KeyCode::Char('i') => self.start_inspect(),

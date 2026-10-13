@@ -712,6 +712,7 @@ fn render_help(f: &mut Frame, area: Rect) {
             "  1..9",
             "jump to a tab by position (Containers…Contexts)",
         ),
+        help_line("  C", "jump to Contexts"),
         help_line(
             "  : cmd",
             "co, im, svc, stacks, nodes, ctx, pull, prune, sysprune, q",

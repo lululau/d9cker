@@ -78,7 +78,7 @@ Press `?` at any time — help is global and overlays whatever you're looking at
 | Key | Action |
 |---|---|
 | `h` / `l`, `Tab` / `S-Tab` | previous / next tab (`Tab` works from *any* mode) |
-| `1`…`8` | jump straight to a tab |
+| `1`…`9`, `C` | jump straight to a tab · `C` jump to Contexts |
 | `j` / `k`, `g` / `G` | move selection · top / bottom |
 | `u` / `d` | half-page up / down (PgUp/PgDn = full page) |
 | `←` / `→` | scroll horizontally (reveal truncated values) |
